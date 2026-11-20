@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/img_launcher_shield_gate"
+        android:drawable="@drawable/img_launcher_cenop"
         android:gravity="center" />
 </layer-list>

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   getRedirectResult,
   onAuthStateChanged,
+  signInWithPopup,
   signInWithRedirect,
   signOut,
 } from 'firebase/auth';
@@ -104,17 +105,36 @@ export default function App() {
   // 0. Procesar resultado de redirección de Google Sign-In al volver a la app
   useEffect(() => {
     let active = true;
+    const hadRedirect =
+      typeof window !== 'undefined' &&
+      window.sessionStorage.getItem('ca_google_redirect') === '1';
+    if (hadRedirect) {
+      setAuthBusy(true);
+    }
+
     getRedirectResult(auth)
       .then((result) => {
-        if (active && result?.user) {
+        if (!active) return;
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.removeItem('ca_google_redirect');
+        }
+        if (result?.user) {
           setErrorMsg('');
+          setAuthBusy(false);
+        } else if (hadRedirect && !auth.currentUser) {
+          setAuthBusy(false);
+          setErrorMsg(
+            'El navegador o WebView bloqueó la sesión al regresar de Google (cookies de terceros restringidas o dominio sin autorizar). Autoriza este dominio en Firebase Console o usa la opción con ventana emergente.'
+          );
         }
       })
       .catch((err) => {
-        if (active) {
-          setErrorMsg(humanizeFirebaseError(err));
-          setAuthBusy(false);
+        if (!active) return;
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.removeItem('ca_google_redirect');
         }
+        setErrorMsg(humanizeFirebaseError(err));
+        setAuthBusy(false);
       });
     return () => {
       active = false;
@@ -213,9 +233,27 @@ export default function App() {
     setAuthBusy(true);
     setErrorMsg('');
     try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem('ca_google_redirect', '1');
+      }
       await signInWithRedirect(auth, googleProvider);
     } catch (err) {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem('ca_google_redirect');
+      }
       setErrorMsg(humanizeFirebaseError(err));
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleGoogleSignInPopupFallback() {
+    setAuthBusy(true);
+    setErrorMsg('');
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      setErrorMsg(humanizeFirebaseError(err));
+    } finally {
       setAuthBusy(false);
     }
   }
@@ -313,8 +351,8 @@ export default function App() {
     return (
       <div className="center-screen">
         <div className="auth-card" style={{ textAlign: 'center' }}>
-          <div className="brand-badge" style={{ margin: '0 auto 14px' }}>
-            <Shield size={24} />
+          <div className="brand-crest" style={{ margin: '0 auto 14px', width: 56, height: 56 }}>
+            <img src="./cenop-escudo.png" alt="Escudo CENOP" />
           </div>
           <h1 className="auth-title">Control Acceso</h1>
           <p className="auth-desc">Conectando con Firebase en tiempo real...</p>
@@ -330,10 +368,26 @@ export default function App() {
     return (
       <div className="center-screen">
         <div className="auth-card">
-          <div className="brand-badge">
-            <Shield size={24} />
+          <div className="auth-hero">
+            <img
+              src="./cenop-banner.jpg"
+              alt="Instalaciones CENOP Policía Nacional"
+              className="auth-hero-photo"
+            />
+            <div className="auth-hero-overlay">
+              <div className="brand-crest">
+                <img src="./cenop-escudo.png" alt="Escudo CENOP" />
+              </div>
+              <div>
+                <h1 className="auth-title" style={{ margin: 0, color: '#fff' }}>
+                  Control Acceso
+                </h1>
+                <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: '#cbd5e1' }}>
+                  CENOP · Turno en Vivo
+                </p>
+              </div>
+            </div>
           </div>
-          <h1 className="auth-title">Control Acceso</h1>
           <p className="auth-desc">
             Control diario de ingresos de personal y visitantes en tiempo real para garita y
             seguridad.
@@ -363,16 +417,27 @@ export default function App() {
             <strong>Operador</strong> para consultar o marcar ingresos.
           </div>
 
-          <button
-            type="button"
-            className="btn btn-primary"
-            style={{ width: '100%' }}
-            onClick={handleGoogleSignIn}
-            disabled={authBusy}
-          >
-            <LogIn size={18} />
-            {authBusy ? 'Iniciando sesión...' : 'Ingresar con Google'}
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: '100%' }}
+              onClick={handleGoogleSignIn}
+              disabled={authBusy}
+            >
+              <LogIn size={18} />
+              {authBusy ? 'Redirigiendo a Google...' : 'Ingresar con Google'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              style={{ width: '100%' }}
+              onClick={handleGoogleSignInPopupFallback}
+              disabled={authBusy}
+            >
+              Alternativa: ingresar con ventana emergente
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -442,8 +507,8 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand-wrap">
-            <div className="brand-badge">
-              <Shield size={22} />
+            <div className="brand-crest">
+              <img src="./cenop-escudo.png" alt="Escudo CENOP" />
             </div>
             <div>
               <h1 className="brand-title">Control Acceso</h1>

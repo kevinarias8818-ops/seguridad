@@ -49,9 +49,9 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
-    val currentUser by auth.authStateFlow()
+    val authFlowUser by auth.authStateFlow()
         .collectAsStateWithLifecycle(initialValue = auth.currentUser)
-    val user = currentUser
+    val user = authFlowUser ?: auth.currentUser
 
     if (user == null) {
         AuthScreen(onAuthSuccess = {})
