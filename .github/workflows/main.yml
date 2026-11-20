@@ -22,19 +22,49 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Configurar Gradle
+      - name: Configurar Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
 
       - name: Aceptar licencias de Android SDK
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
-      - name: Crear google-services.json desde Secret
-        if: env.GOOGLE_SERVICES_JSON != ''
+      - name: Configurar google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          mkdir -p app
-          printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            mkdir -p app
+            printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          fi
+          if [ ! -f "app/google-services.json" ] && [ -f "google-services.json" ]; then
+            mkdir -p app
+            cp google-services.json app/google-services.json
+          fi
+
+      - name: Restaurar o generar debug.keystore
+        run: |
+          KEYSTORE_PATH="${GITHUB_WORKSPACE:-$PWD}/debug.keystore"
+          if [ -s "$KEYSTORE_PATH" ]; then
+            echo "debug.keystore ya existe en $KEYSTORE_PATH"
+          elif [ -f "debug.keystore.base64" ]; then
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > "$KEYSTORE_PATH"
+            echo "debug.keystore restaurado desde debug.keystore.base64 en $KEYSTORE_PATH"
+          else
+            keytool -genkeypair -noprompt \
+              -keystore "$KEYSTORE_PATH" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "debug.keystore generado con keytool en $KEYSTORE_PATH"
+          fi
+          ls -lh "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
 
       - name: Compilar APK Debug
         run: |
@@ -52,6 +82,7 @@ jobs:
         with:
           name: ControlAcceso-APK
           path: "**/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
 
       - name: Publicar APK en Release (al crear un tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
