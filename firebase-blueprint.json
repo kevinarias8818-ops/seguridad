@@ -161,12 +161,46 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "FcmToken": {
+      "title": "FcmToken",
+      "description": "Token de dispositivo Android para notificaciones push FCM de administradores.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID del administrador dueño del dispositivo."
+        },
+        "token": {
+          "type": "string",
+          "description": "Token de registro de Firebase Cloud Messaging."
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["ANDROID"],
+          "description": "Plataforma del dispositivo."
+        },
+        "unitId": {
+          "type": "string",
+          "description": "Unidad operativa asignada."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última sincronización del token (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "token", "platform", "unitId", "updatedAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Perfiles y roles de acceso de personal y administradores."
+    },
+    "/users/{userId}/fcmTokens/{tokenId}": {
+      "schema": { "$ref": "#/entities/FcmToken" },
+      "description": "Tokens FCM de dispositivos de administradores para alertas de ingresos."
     },
     "/entries/{entryId}": {
       "schema": { "$ref": "#/entities/AccessEntry" },

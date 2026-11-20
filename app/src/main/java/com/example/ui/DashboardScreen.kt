@@ -1,6 +1,10 @@
 package com.example.ui
 
+import android.Manifest
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +40,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
@@ -84,9 +89,11 @@ import com.example.model.EntryStatus
 import com.example.model.UiState
 import com.example.model.UserProfile
 import com.example.model.UserRole
+import com.example.notifications.NotificationHelper
 import com.example.util.DateTimeUtils
 import com.example.util.TimeSlotFilter
 import com.google.firebase.auth.FirebaseUser
+import kotlinx.coroutines.launch
 
 private enum class AppTab(val label: String) {
     ENTRIES("Ingresos"),
@@ -125,12 +132,49 @@ fun MainDashboardRoute(
     var entryToDelete by remember { mutableStateOf<AccessEntry?>(null) }
 
     val profile = (profileState as? UiState.Success)?.data
-    val isRealAdmin = profile?.parsedRole == UserRole.ADMIN
+    val isRealAdmin = profile?.parsedRole == UserRole.ADMIN && profile.active
     val isEffectiveAdmin = isRealAdmin && !simulateOperator
     val isPendingApproval = profile != null &&
         (profile.parsedRole == UserRole.PENDING || !profile.active)
     val pendingUsersCount = (usersState as? UiState.Success)?.data
         ?.count { it.parsedRole == UserRole.PENDING } ?: 0
+
+    var hasNotificationPermission by remember {
+        mutableStateOf(NotificationHelper.hasNotificationPermission(context))
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted || NotificationHelper.hasNotificationPermission(context)
+    }
+
+    LaunchedEffect(profile?.userId, profile?.role, profile?.active) {
+        val loadedProfile = profile ?: return@LaunchedEffect
+        if (loadedProfile.parsedRole == UserRole.ADMIN && loadedProfile.active) {
+            NotificationHelper.ensureChannel(context)
+            viewModel.syncAdminPushToken(context, loadedProfile.unitId)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !NotificationHelper.hasNotificationPermission(context)
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            viewModel.unregisterNonAdminPush(loadedProfile.unitId)
+        }
+    }
+
+    LaunchedEffect(isRealAdmin) {
+        if (!isRealAdmin) return@LaunchedEffect
+        viewModel.entryAlerts.collect { alert ->
+            NotificationHelper.showEntryAlert(
+                context = context,
+                title = alert.title,
+                body = alert.body,
+                entryId = alert.entryId
+            )
+            snackbarHostState.showSnackbar(alert.title)
+        }
+    }
 
     if (currentTab != AppTab.ENTRIES) {
         BackHandler { currentTab = AppTab.ENTRIES }
@@ -208,7 +252,11 @@ fun MainDashboardRoute(
                         }
                         IconButton(
                             onClick = {
-                                GoogleAuthHelper.signOut(credentialManager, scope)
+                                val unit = profile?.unitId ?: "UNIDAD_PRINCIPAL"
+                                scope.launch {
+                                    viewModel.clearPushRegistrationOnSignOut(unit)
+                                    GoogleAuthHelper.signOut(credentialManager, scope)
+                                }
                             },
                             modifier = Modifier
                                 .size(48.dp)
@@ -348,6 +396,14 @@ fun MainDashboardRoute(
                                 profile = profState.data,
                                 isEffectiveAdmin = isEffectiveAdmin,
                                 isSimulatingOperator = isRealAdmin && simulateOperator,
+                                showEnableNotificationsBanner = isRealAdmin && !hasNotificationPermission,
+                                onRequestNotifications = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        notificationPermissionLauncher.launch(
+                                            Manifest.permission.POST_NOTIFICATIONS
+                                        )
+                                    }
+                                },
                                 entriesState = entriesState,
                                 filterState = filterState,
                                 busyEntryId = busyEntryId,
@@ -430,6 +486,8 @@ private fun EntriesDashboardContent(
     profile: UserProfile,
     isEffectiveAdmin: Boolean,
     isSimulatingOperator: Boolean,
+    showEnableNotificationsBanner: Boolean,
+    onRequestNotifications: () -> Unit,
     entriesState: UiState<List<AccessEntry>>,
     filterState: DashboardFilterState,
     busyEntryId: String?,
@@ -488,6 +546,45 @@ private fun EntriesDashboardContent(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (showEnableNotificationsBanner) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.NotificationsActive,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Activa las notificaciones para recibir alertas de nuevos ingresos.",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                            TextButton(
+                                onClick = onRequestNotifications,
+                                modifier = Modifier.testTag("enable_notifications_button")
+                            ) {
+                                Text("Activar")
+                            }
+                        }
+                    }
+                }
+            }
+
             if (isSimulatingOperator) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Surface(

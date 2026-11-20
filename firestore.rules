@@ -66,6 +66,14 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidFcmToken(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.token is string && data.token.size() >= 10 && data.token.size() <= 512 &&
+             data.platform == 'ANDROID' &&
+             data.unitId is string && data.unitId.size() >= 2 && data.unitId.size() <= 64 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     function isValidEntry(data) {
       return data.unitId is string && data.unitId.size() >= 2 && data.unitId.size() <= 64 &&
              data.entryDate is string && data.entryDate.size() == 10 && data.entryDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
@@ -129,6 +137,33 @@ service cloud.firestore {
                        );
 
       allow delete: if false;
+
+      match /fcmTokens/{tokenId} {
+        allow get: if isSignedIn() && isValidId(tokenId) && (request.auth.uid == userId || isAdmin());
+        allow list: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+
+        allow create: if isSignedIn() &&
+                         isValidId(tokenId) &&
+                         request.auth.uid == userId &&
+                         isAdmin() &&
+                         isValidFcmToken(incoming()) &&
+                         incoming().keys().hasAll(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().unitId == 'UNIDAD_PRINCIPAL';
+
+        allow update: if isSignedIn() &&
+                         isValidId(tokenId) &&
+                         request.auth.uid == userId &&
+                         isAdmin() &&
+                         isValidFcmToken(incoming()) &&
+                         incoming().keys().hasAll(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
+                         incoming().userId == existing().userId &&
+                         incoming().unitId == existing().unitId;
+
+        allow delete: if isSignedIn() && isValidId(tokenId) && (request.auth.uid == userId || isAdmin());
+      }
     }
 
     // --- Collection: /entries/{entryId} ---

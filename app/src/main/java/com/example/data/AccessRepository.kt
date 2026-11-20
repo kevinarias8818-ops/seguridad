@@ -18,6 +18,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
+import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -178,6 +179,74 @@ class AccessRepository(
             handleFirestoreError(e, OperationType.UPDATE, docPath)
             Result.failure(e)
         }
+    }
+
+    suspend fun saveFcmToken(
+        uid: String,
+        unitId: String,
+        token: String
+    ): Result<Unit> {
+        val cleanToken = token.trim()
+        if (uid.isBlank() || cleanToken.length !in 10..512) {
+            return Result.failure(IllegalArgumentException("Token FCM inválido"))
+        }
+        val tokenId = tokenDocId(cleanToken)
+        val docPath = "users/$uid/fcmTokens/$tokenId"
+        return try {
+            val currentUid = requireUserId()
+            check(currentUid == uid) { "Sesión no coincide con el propietario del token." }
+            val safeUnitId = unitId.trim().take(64).ifBlank { DEFAULT_UNIT_ID }
+            db.collection("users")
+                .document(uid)
+                .collection("fcmTokens")
+                .document(tokenId)
+                .set(
+                    mapOf(
+                        "userId" to uid,
+                        "token" to cleanToken,
+                        "platform" to "ANDROID",
+                        "unitId" to safeUnitId,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteFcmToken(
+        uid: String,
+        token: String
+    ): Result<Unit> {
+        val cleanToken = token.trim()
+        if (uid.isBlank() || cleanToken.isBlank()) return Result.success(Unit)
+        val tokenId = tokenDocId(cleanToken)
+        val docPath = "users/$uid/fcmTokens/$tokenId"
+        return try {
+            requireUserId()
+            db.collection("users")
+                .document(uid)
+                .collection("fcmTokens")
+                .document(tokenId)
+                .delete()
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    private fun tokenDocId(token: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(token.toByteArray())
+        return digest.take(16).joinToString("") { "%02x".format(it) }
     }
 
     fun observeEntries(

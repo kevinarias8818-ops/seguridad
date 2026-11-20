@@ -1,0 +1,12 @@
+{
+  "name": "control-acceso-functions",
+  "description": "Cloud Functions for sending FCM push notifications to Admins on new access entries",
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.1",
+    "firebase-functions": "^6.1.1"
+  }
+}

@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,6 +11,7 @@ import com.example.model.EntryStatus
 import com.example.model.UiState
 import com.example.model.UserProfile
 import com.example.model.UserRole
+import com.example.notifications.FcmTokenManager
 import com.example.util.DateTimeUtils
 import com.example.util.TimeSlotFilter
 import com.google.firebase.auth.FirebaseUser
@@ -27,8 +29,15 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+data class EntryPushAlert(
+    val entryId: String,
+    val title: String,
+    val body: String
+)
 
 enum class EntryStatusFilter(val label: String) {
     ALL("Todos"),
@@ -71,6 +80,12 @@ class ControlAccesoViewModel(
 
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents = _snackbarEvents.asSharedFlow()
+
+    private val _entryAlerts = MutableSharedFlow<EntryPushAlert>(extraBufferCapacity = 8)
+    val entryAlerts = _entryAlerts.asSharedFlow()
+
+    private var hasLoadedInitialEntries = false
+    private val knownEntryStatuses = mutableMapOf<String, String>()
 
     val profileState: StateFlow<UiState<UserProfile>> =
         combine(_profileReady, _profileInitError) { ready, initError -> ready to initError }
@@ -132,6 +147,11 @@ class ControlAccesoViewModel(
                             unitId = profile.unitId,
                             entryDateFilter = dateFilter
                         )
+                            .onEach { list ->
+                                if (profile.parsedRole == UserRole.ADMIN && profile.active) {
+                                    detectNewEntryAlerts(list)
+                                }
+                            }
                             .map<List<AccessEntry>, UiState<List<AccessEntry>>> { UiState.Success(it) }
                             .catch { error ->
                                 val firestoreError = generateSequence(error) { it.cause }
@@ -338,6 +358,76 @@ class ControlAccesoViewModel(
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al actualizar permisos")
             }
+        }
+    }
+
+    fun syncAdminPushToken(context: Context, unitId: String) {
+        viewModelScope.launch {
+            FcmTokenManager.registerAdminPushToken(
+                context = context.applicationContext,
+                repository = repository,
+                uid = currentUserId,
+                unitId = unitId
+            )
+        }
+    }
+
+    fun unregisterNonAdminPush(unitId: String) {
+        viewModelScope.launch {
+            FcmTokenManager.unregisterNonAdminTopic(unitId)
+        }
+    }
+
+    suspend fun clearPushRegistrationOnSignOut(unitId: String) {
+        FcmTokenManager.clearPushRegistrationOnSignOut(
+            repository = repository,
+            uid = currentUserId,
+            unitId = unitId
+        )
+    }
+
+    private fun detectNewEntryAlerts(entries: List<AccessEntry>) {
+        if (!hasLoadedInitialEntries) {
+            entries.forEach { knownEntryStatuses[it.id] = it.status }
+            hasLoadedInitialEntries = true
+            return
+        }
+
+        for (entry in entries) {
+            val prevStatus = knownEntryStatuses[entry.id]
+            val personLabel = listOf(entry.rank, entry.fullName)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+                .ifBlank { entry.fullName }
+
+            val becameCheckedIn = prevStatus != null &&
+                prevStatus != EntryStatus.INGRESO.name &&
+                entry.status == EntryStatus.INGRESO.name &&
+                entry.checkInByUid != currentUserId
+
+            val createdBySomeoneElse = prevStatus == null &&
+                entry.createdByUid != currentUserId
+
+            if (becameCheckedIn) {
+                val actor = entry.checkInByName.orEmpty().ifBlank { "Operador" }
+                _entryAlerts.tryEmit(
+                    EntryPushAlert(
+                        entryId = entry.id,
+                        title = "Nuevo ingreso registrado: $personLabel",
+                        body = "${entry.destinationUnit} · Marcado por $actor"
+                    )
+                )
+            } else if (createdBySomeoneElse) {
+                val stateLabel = if (entry.parsedStatus == EntryStatus.INGRESO) "Ya ingresó" else "Pendiente"
+                _entryAlerts.tryEmit(
+                    EntryPushAlert(
+                        entryId = entry.id,
+                        title = "Nuevo registro en garita: $personLabel",
+                        body = "${entry.destinationUnit} · Estado: $stateLabel"
+                    )
+                )
+            }
+            knownEntryStatuses[entry.id] = entry.status
         }
     }
 
