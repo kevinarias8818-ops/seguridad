@@ -66,6 +66,9 @@ class ControlAccesoViewModel(
     private val _busyEntryId = MutableStateFlow<String?>(null)
     val busyEntryId: StateFlow<String?> = _busyEntryId.asStateFlow()
 
+    private val _isSubmitting = MutableStateFlow(false)
+    val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
+
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents = _snackbarEvents.asSharedFlow()
 
@@ -237,37 +240,49 @@ class ControlAccesoViewModel(
     }
 
     fun createEntry(draft: EntryDraft, onDone: () -> Unit) {
+        if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
         viewModelScope.launch {
-            val result = repository.createEntry(
-                draft = draft,
-                actorUid = currentUserId,
-                actorName = profile.displayName,
-                unitId = profile.unitId
-            )
-            result.onSuccess {
-                _snackbarEvents.tryEmit("Ingreso creado: ${draft.fullName}")
-                onDone()
-            }.onFailure { error ->
-                _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al guardar el ingreso")
+            _isSubmitting.value = true
+            try {
+                val result = repository.createEntry(
+                    draft = draft,
+                    actorUid = currentUserId,
+                    actorName = profile.displayName,
+                    unitId = profile.unitId
+                )
+                result.onSuccess {
+                    _snackbarEvents.tryEmit("Ingreso creado: ${draft.fullName}")
+                    onDone()
+                }.onFailure { error ->
+                    _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al guardar el ingreso")
+                }
+            } finally {
+                _isSubmitting.value = false
             }
         }
     }
 
     fun importEntriesBatch(drafts: List<EntryDraft>, onDone: () -> Unit) {
+        if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
         viewModelScope.launch {
-            val result = repository.createEntriesBatch(
-                drafts = drafts,
-                actorUid = currentUserId,
-                actorName = profile.displayName,
-                unitId = profile.unitId
-            )
-            result.onSuccess { count ->
-                _snackbarEvents.tryEmit("$count registros importados desde correo")
-                onDone()
-            }.onFailure { error ->
-                _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al importar registros")
+            _isSubmitting.value = true
+            try {
+                val result = repository.createEntriesBatch(
+                    drafts = drafts,
+                    actorUid = currentUserId,
+                    actorName = profile.displayName,
+                    unitId = profile.unitId
+                )
+                result.onSuccess { count ->
+                    _snackbarEvents.tryEmit("$count registros importados desde correo")
+                    onDone()
+                }.onFailure { error ->
+                    _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al importar registros")
+                }
+            } finally {
+                _isSubmitting.value = false
             }
         }
     }
@@ -279,21 +294,27 @@ class ControlAccesoViewModel(
         existingEntry: AccessEntry,
         onDone: () -> Unit
     ) {
+        if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
         viewModelScope.launch {
-            val result = repository.updateEntry(
-                entryId = entryId,
-                draft = draft,
-                newStatus = status,
-                existingEntry = existingEntry,
-                actorUid = currentUserId,
-                actorName = profile.displayName
-            )
-            result.onSuccess {
-                _snackbarEvents.tryEmit("Registro actualizado: ${draft.fullName}")
-                onDone()
-            }.onFailure { error ->
-                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo actualizar el registro")
+            _isSubmitting.value = true
+            try {
+                val result = repository.updateEntry(
+                    entryId = entryId,
+                    draft = draft,
+                    newStatus = status,
+                    existingEntry = existingEntry,
+                    actorUid = currentUserId,
+                    actorName = profile.displayName
+                )
+                result.onSuccess {
+                    _snackbarEvents.tryEmit("Registro actualizado: ${draft.fullName}")
+                    onDone()
+                }.onFailure { error ->
+                    _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo actualizar el registro")
+                }
+            } finally {
+                _isSubmitting.value = false
             }
         }
     }

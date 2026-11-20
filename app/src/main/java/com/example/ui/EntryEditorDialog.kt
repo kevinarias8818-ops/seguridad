@@ -34,6 +34,7 @@ import com.example.util.DateTimeUtils
 @Composable
 fun EntryEditorDialog(
     existingEntry: AccessEntry?,
+    isSaving: Boolean = false,
     onDismiss: () -> Unit,
     onSaveNew: (EntryDraft) -> Unit,
     onSaveEdit: (entryId: String, draft: EntryDraft, status: EntryStatus, existing: AccessEntry) -> Unit
@@ -260,16 +261,27 @@ fun EntryEditorDialog(
                         }
                     }
                 },
+                enabled = !isSaving,
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .height(48.dp)
                     .testTag("save_entry_button")
             ) {
-                Text(if (isEditing) "Guardar cambios" else "Registrar ingreso")
+                Text(
+                    when {
+                        isSaving -> "Guardando..."
+                        isEditing -> "Guardar cambios"
+                        else -> "Registrar ingreso"
+                    }
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, modifier = Modifier.height(48.dp)) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isSaving,
+                modifier = Modifier.height(48.dp)
+            ) {
                 Text("Cancelar")
             }
         }

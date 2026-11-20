@@ -40,6 +40,7 @@ import com.example.util.EmailParser
 
 @Composable
 fun EmailImportDialog(
+    isSaving: Boolean = false,
     onDismiss: () -> Unit,
     onImportBatch: (List<EntryDraft>) -> Unit
 ) {
@@ -199,18 +200,22 @@ fun EmailImportDialog(
         confirmButton = {
             Button(
                 onClick = { onImportBatch(parsedEntries) },
-                enabled = parsedEntries.isNotEmpty() &&
+                enabled = !isSaving && parsedEntries.isNotEmpty() &&
                     Regex("""^\d{4}-\d{2}-\d{2}$""").matches(targetDate.trim()),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .height(48.dp)
                     .testTag("confirm_email_import_button")
             ) {
-                Text("Importar (${parsedEntries.size})")
+                Text(if (isSaving) "Importando..." else "Importar (${parsedEntries.size})")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, modifier = Modifier.height(48.dp)) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isSaving,
+                modifier = Modifier.height(48.dp)
+            ) {
                 Text("Cancelar")
             }
         }

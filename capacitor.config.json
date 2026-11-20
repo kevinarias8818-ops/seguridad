@@ -1,0 +1,8 @@
+{
+  "appId": "com.aistudio.controlacceso.xmkrpv",
+  "appName": "Control Acceso",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}

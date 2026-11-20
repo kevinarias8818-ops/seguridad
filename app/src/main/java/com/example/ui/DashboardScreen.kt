@@ -109,6 +109,7 @@ fun MainDashboardRoute(
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val simulateOperator by viewModel.simulateOperatorMode.collectAsStateWithLifecycle()
     val busyEntryId by viewModel.busyEntryId.collectAsStateWithLifecycle()
+    val isSubmitting by viewModel.isSubmitting.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -373,7 +374,8 @@ fun MainDashboardRoute(
     if (showCreateDialog) {
         EntryEditorDialog(
             existingEntry = null,
-            onDismiss = { showCreateDialog = false },
+            isSaving = isSubmitting,
+            onDismiss = { if (!isSubmitting) showCreateDialog = false },
             onSaveNew = { draft ->
                 viewModel.createEntry(draft) { showCreateDialog = false }
             },
@@ -384,7 +386,8 @@ fun MainDashboardRoute(
     editingEntry?.let { entry ->
         EntryEditorDialog(
             existingEntry = entry,
-            onDismiss = { editingEntry = null },
+            isSaving = isSubmitting,
+            onDismiss = { if (!isSubmitting) editingEntry = null },
             onSaveNew = {},
             onSaveEdit = { entryId, draft, status, existing ->
                 viewModel.updateEntry(entryId, draft, status, existing) { editingEntry = null }
@@ -394,7 +397,8 @@ fun MainDashboardRoute(
 
     if (showEmailImportDialog) {
         EmailImportDialog(
-            onDismiss = { showEmailImportDialog = false },
+            isSaving = isSubmitting,
+            onDismiss = { if (!isSubmitting) showEmailImportDialog = false },
             onImportBatch = { drafts ->
                 viewModel.importEntriesBatch(drafts) { showEmailImportDialog = false }
             }

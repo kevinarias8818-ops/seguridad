@@ -47,7 +47,7 @@ object DateTimeUtils {
         filter: TimeSlotFilter
     ): Boolean {
         if (filter == TimeSlotFilter.ALL) return true
-        val hour = extractHour(checkInAt ?: createdAt, expectedTime) ?: return false
+        val hour = extractHour(checkInAt, createdAt, expectedTime) ?: return false
         return when (filter) {
             TimeSlotFilter.ALL -> true
             TimeSlotFilter.MORNING -> hour in 5..11
@@ -56,13 +56,24 @@ object DateTimeUtils {
         }
     }
 
-    private fun extractHour(timestamp: Timestamp?, expectedTime: String): Int? {
-        val expectedHour = Regex("""^(\d{1,2}):\d{2}""").find(expectedTime.trim())
-            ?.groupValues?.getOrNull(1)?.toIntOrNull()
-        if (timestamp != null) {
-            val cal = Calendar.getInstance().apply { time = timestamp.toDate() }
+    private fun extractHour(
+        checkInAt: Timestamp?,
+        createdAt: Timestamp?,
+        expectedTime: String
+    ): Int? {
+        if (checkInAt != null) {
+            val cal = Calendar.getInstance().apply { time = checkInAt.toDate() }
             return cal.get(Calendar.HOUR_OF_DAY)
         }
-        return expectedHour?.takeIf { it in 0..23 }
+        val expectedHour = Regex("""^(\d{1,2})[:h]\d{0,2}""").find(expectedTime.trim())
+            ?.groupValues?.getOrNull(1)?.toIntOrNull()?.takeIf { it in 0..23 }
+        if (expectedHour != null) {
+            return expectedHour
+        }
+        if (createdAt != null) {
+            val cal = Calendar.getInstance().apply { time = createdAt.toDate() }
+            return cal.get(Calendar.HOUR_OF_DAY)
+        }
+        return null
     }
 }
