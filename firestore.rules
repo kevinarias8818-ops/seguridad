@@ -1,0 +1,198 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() &&
+             request.auth.token.email == 'kevinarias.8818@gmail.com' &&
+             request.auth.token.email_verified == true;
+    }
+
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveStaff() {
+      return isSignedIn() &&
+             userDocExists() &&
+             userDoc().active == true &&
+             userDoc().role in ['ADMIN', 'OPERATOR'];
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() ||
+             (isActiveStaff() && userDoc().role == 'ADMIN');
+    }
+
+    function userUnitId() {
+      return userDoc().unitId;
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+             data.role in ['PENDING', 'ADMIN', 'OPERATOR'] &&
+             data.unitId is string && data.unitId.size() >= 2 && data.unitId.size() <= 64 &&
+             data.active is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidEntry(data) {
+      return data.unitId is string && data.unitId.size() >= 2 && data.unitId.size() <= 64 &&
+             data.entryDate is string && data.entryDate.size() == 10 && data.entryDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+             (!('rank' in data) || (data.rank is string && data.rank.size() <= 40)) &&
+             data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+             data.documentNumber is string && data.documentNumber.size() >= 1 && data.documentNumber.size() <= 40 &&
+             data.plate is string && data.plate.size() <= 20 &&
+             data.destinationUnit is string && data.destinationUnit.size() >= 1 && data.destinationUnit.size() <= 80 &&
+             (!('reason' in data) || (data.reason is string && data.reason.size() <= 160)) &&
+             data.visitorType in ['PERSONAL', 'VISITANTE', 'PROVEEDOR', 'CONTRATISTA'] &&
+             data.expectedTime is string && data.expectedTime.size() <= 20 &&
+             data.source in ['MANUAL', 'CORREO_INSTITUCIONAL'] &&
+             data.notes is string && data.notes.size() <= 300 &&
+             data.status in ['PENDIENTE', 'INGRESO'] &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+             data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time &&
+             (!('checkInAt' in data) || (data.checkInAt is timestamp && data.checkInAt <= request.time)) &&
+             (!('checkInByUid' in data) || (data.checkInByUid is string && data.checkInByUid.size() >= 1 && data.checkInByUid.size() <= 128)) &&
+             (!('checkInByName' in data) || (data.checkInByName is string && data.checkInByName.size() >= 1 && data.checkInByName.size() <= 120)) &&
+             (
+               (data.status == 'PENDIENTE' && !('checkInAt' in data) && !('checkInByUid' in data) && !('checkInByName' in data)) ||
+               (data.status == 'INGRESO' && ('checkInAt' in data) && ('checkInByUid' in data) && ('checkInByName' in data))
+             );
+    }
+
+    // --- Collection: /users/{userId} ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+
+      // Create: New users self-register strictly as PENDING (inactive, no entries access).
+      // Only Bootstrapped Admin can self-register as ADMIN, and only Admin can grant OPERATOR/ADMIN.
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().keys().hasAll(['userId', 'email', 'displayName', 'role', 'unitId', 'active', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'email', 'displayName', 'role', 'unitId', 'active', 'createdAt', 'updatedAt']) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().unitId == 'UNIDAD_PRINCIPAL' &&
+                       (
+                         (incoming().role == 'PENDING' && incoming().active == false) ||
+                         (incoming().role == 'ADMIN' && incoming().active == true && isBootstrappedAdmin())
+                       );
+
+      // Update: Self can only update displayName + updatedAt. Admin can update role, active, displayName, updatedAt.
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().email == existing().email &&
+                       incoming().unitId == existing().unitId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         (request.auth.uid == userId &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])) ||
+                         (isAdmin() &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'active', 'updatedAt']))
+                       );
+
+      allow delete: if false;
+    }
+
+    // --- Collection: /entries/{entryId} ---
+    match /entries/{entryId} {
+      allow get: if isSignedIn() &&
+                    isValidId(entryId) &&
+                    isActiveStaff() &&
+                    existing().unitId == userUnitId();
+
+      allow list: if isSignedIn() &&
+                     isActiveStaff() &&
+                     existing().unitId == userUnitId();
+
+      // Only active Admins can create new entries
+      allow create: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       isValidEntry(incoming()) &&
+                       incoming().keys().hasAll([
+                         'unitId', 'entryDate', 'fullName', 'documentNumber', 'plate',
+                         'destinationUnit', 'visitorType', 'expectedTime', 'source',
+                         'notes', 'status', 'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'unitId', 'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
+                         'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
+                         'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
+                         'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isAdmin() &&
+                       incoming().unitId == userUnitId() &&
+                       incoming().createdByUid == request.auth.uid;
+
+      // Tiered Update:
+      // 1. Admin can edit fields or adjust status
+      // 2. Active Operator can ONLY check in a PENDIENTE entry -> INGRESO
+      allow update: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       isValidEntry(incoming()) &&
+                       incoming().unitId == existing().unitId &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdByName == existing().createdByName &&
+                       incoming().createdAt == existing().createdAt &&
+                       isActiveStaff() &&
+                       existing().unitId == userUnitId() &&
+                       (
+                         (isAdmin() &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
+                            'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
+                            'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName', 'updatedAt'
+                          ])) ||
+                         (existing().status == 'PENDIENTE' &&
+                          incoming().status == 'INGRESO' &&
+                          incoming().checkInByUid == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'status', 'checkInAt', 'checkInByUid', 'checkInByName', 'updatedAt'
+                          ]))
+                       );
+
+      // Only active Admins can delete entries; Operators cannot delete history
+      allow delete: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       isAdmin() &&
+                       existing().unitId == userUnitId();
+    }
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Perfil y rol de acceso del personal autorizado en la unidad.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario."
+        },
+        "email": {
+          "type": "string",
+          "description": "Correo electrónico verificado de Google Sign-In."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Nombre visible del usuario en turno."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["PENDING", "ADMIN", "OPERATOR"],
+          "description": "Rol asignado: PENDING (Sin acceso hasta aprobación), ADMIN (Encargado de Seguridad) u OPERATOR (Control de Garita)."
+        },
+        "unitId": {
+          "type": "string",
+          "description": "Identificador de la unidad operativa."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Indica si el usuario tiene acceso activo."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de creación (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última actualización (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "email",
+        "displayName",
+        "role",
+        "unitId",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AccessEntry": {
+      "title": "AccessEntry",
+      "description": "Registro diario de ingreso autorizado de personal, visitantes, proveedores o contratistas.",
+      "type": "object",
+      "properties": {
+        "unitId": {
+          "type": "string",
+          "description": "Identificador de la unidad operativa."
+        },
+        "entryDate": {
+          "type": "string",
+          "description": "Fecha programada de ingreso en formato YYYY-MM-DD."
+        },
+        "rank": {
+          "type": "string",
+          "description": "Grado, cargo o tratamiento (ej. Cabo, Teniente, Ing., Sr.)."
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Nombre completo de la persona autorizada."
+        },
+        "documentNumber": {
+          "type": "string",
+          "description": "Número de cédula o identificación."
+        },
+        "plate": {
+          "type": "string",
+          "description": "Placa del vehículo o vacío si es peatonal."
+        },
+        "destinationUnit": {
+          "type": "string",
+          "description": "Dependencia o unidad destino."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Motivo del ingreso (ej. Relevo de turno, Reunión, Mantenimiento)."
+        },
+        "visitorType": {
+          "type": "string",
+          "enum": ["PERSONAL", "VISITANTE", "PROVEEDOR", "CONTRATISTA"],
+          "description": "Categoría de ingreso."
+        },
+        "expectedTime": {
+          "type": "string",
+          "description": "Hora programada de ingreso (HH:mm)."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["MANUAL", "CORREO_INSTITUCIONAL"],
+          "description": "Origen del registro."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Observaciones del ingreso."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDIENTE", "INGRESO"],
+          "description": "Estado actual del ingreso."
+        },
+        "checkInAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora efectiva de ingreso (FieldValue.serverTimestamp())."
+        },
+        "checkInByUid": {
+          "type": "string",
+          "description": "UID del operador o administrador que marcó el ingreso."
+        },
+        "checkInByName": {
+          "type": "string",
+          "description": "Nombre visible de quien marcó el ingreso."
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID del administrador que creó el registro."
+        },
+        "createdByName": {
+          "type": "string",
+          "description": "Nombre del administrador que creó el registro."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de creación (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última actualización (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "unitId",
+        "entryDate",
+        "fullName",
+        "documentNumber",
+        "plate",
+        "destinationUnit",
+        "visitorType",
+        "expectedTime",
+        "source",
+        "notes",
+        "status",
+        "createdByUid",
+        "createdByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Perfiles y roles de acceso de personal y administradores."
+    },
+    "/entries/{entryId}": {
+      "schema": { "$ref": "#/entities/AccessEntry" },
+      "description": "Registros de ingresos diarios de personal y visitantes."
+    }
+  }
+}

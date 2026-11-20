@@ -1,0 +1,6 @@
+{
+  "name": "Control Acceso",
+  "description": "Control de ingresos diarios de personal y visitantes con roles de Administrador y Operador, filtros rápidos y sincronización en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
