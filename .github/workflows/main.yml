@@ -30,8 +30,18 @@ jobs:
       - name: Aceptar licencias de Android SDK
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
+      - name: Crear google-services.json desde Secret
+        if: env.GOOGLE_SERVICES_JSON != ''
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          mkdir -p app
+          printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+
       - name: Compilar APK Debug
-        run: gradle assembleDebug --stacktrace
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
 
       - name: Subir APK como artefacto de descarga
         uses: actions/upload-artifact@v4
