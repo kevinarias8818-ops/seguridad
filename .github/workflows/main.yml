@@ -1,3 +1,5 @@
+name: Compilar APK y publicar Release
+
 on:
   push:
     branches: [ "main" ]
@@ -21,15 +23,16 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'gradle'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Aceptar licencias de Android SDK
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Dar permisos de ejecución a Gradle
         run: chmod +x gradlew
 
       - name: Compilar APK Debug
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Subir APK como artefacto de descarga
         uses: actions/upload-artifact@v4
