@@ -52,6 +52,7 @@ jobs:
         run: |
           mkdir -p android/app
           echo "$DEBUG_KEYSTORE_BASE64" | base64 --decode > android/app/debug.keystore
+          echo "$DEBUG_KEYSTORE_BASE64" | base64 --decode > debug.keystore
           
       - name: Compilar APK Debug
         run: |
