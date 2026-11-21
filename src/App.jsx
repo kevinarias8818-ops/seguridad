@@ -427,10 +427,14 @@ export default function App() {
         <div className="auth-card">
           <div className="auth-hero">
             <img
-              src="./cenop-banner.jpg"
-              alt="Instalaciones CENOP Policía Nacional"
+              src="./assets/aistudio/images_6f89d2da.jpeg"
+              alt="Plaza principal e instalaciones del CENOP"
               className="auth-hero-photo"
             />
+            <div className="auth-live-pill">
+              <span className="auth-live-dot" />
+              CENOP · TURNO EN VIVO
+            </div>
             <div className="auth-hero-overlay">
               <div className="brand-crest">
                 <img src="./cenop-escudo.png" alt="Escudo CENOP" />
@@ -439,16 +443,32 @@ export default function App() {
                 <h1 className="auth-title" style={{ margin: 0, color: '#fff' }}>
                   Control Acceso
                 </h1>
-                <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: '#cbd5e1' }}>
-                  CENOP · Turno en Vivo
+                <p style={{ margin: '2px 0 0', fontSize: '0.82rem', color: '#cbd5e1' }}>
+                  Seguridad e Ingresos de Unidad
                 </p>
               </div>
             </div>
           </div>
-          <p className="auth-desc">
-            Control diario de ingresos de personal y visitantes en tiempo real para garita y
-            seguridad.
+
+          <div className="auth-accent-bar" />
+          <h2 style={{ margin: '8px 0 4px', fontSize: '1.15rem', fontWeight: 800 }}>
+            Acceso Institucional
+          </h2>
+          <p className="auth-desc" style={{ marginBottom: 14 }}>
+            Consola operativa para control diario de ingresos, salidas y verificación vehicular en
+            tiempo real.
           </p>
+
+          <div className="auth-roles-grid">
+            <div className="auth-role-tile">
+              <div className="auth-role-title">Administrador</div>
+              <div className="time-col-sub">Gestión total, carga, Excel y roles.</div>
+            </div>
+            <div className="auth-role-tile">
+              <div className="auth-role-title">Operador</div>
+              <div className="time-col-sub">Registro en garita de entradas y salidas.</div>
+            </div>
+          </div>
 
           {isWebAppIdPlaceholder && (
             <div className="error-banner" role="alert">
@@ -468,12 +488,6 @@ export default function App() {
             </div>
           )}
 
-          <div className="info-banner">
-            <strong>Acceso protegido:</strong> Todo usuario nuevo ingresa en estado{' '}
-            <strong>Pendiente</strong>. Solo el Administrador puede otorgar el rol de{' '}
-            <strong>Operador</strong> para consultar o marcar ingresos.
-          </div>
-
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <button
               type="button"
@@ -483,7 +497,7 @@ export default function App() {
               disabled={authBusy}
             >
               <LogIn size={18} />
-              {authBusy ? 'Redirigiendo a Google...' : 'Ingresar con Google'}
+              {authBusy ? 'Redirigiendo a Google...' : 'Iniciar sesión con Google'}
             </button>
             <button
               type="button"
@@ -495,6 +509,10 @@ export default function App() {
               Alternativa: ingresar con ventana emergente
             </button>
           </div>
+
+          <p className="auth-footer-note">
+            Acceso protegido · Habilitación requerida por Administrador
+          </p>
         </div>
       </div>
     );
