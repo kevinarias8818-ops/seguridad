@@ -37,6 +37,7 @@ import {
   importEntriesBatch,
   isValidIsoDate,
   markCheckInNow,
+  markCheckOutNow,
   subscribeAllUsers,
   subscribeEntries,
   subscribeUserProfile,
@@ -277,6 +278,20 @@ export default function App() {
     }
   }
 
+  async function handleCheckOut(entry) {
+    if (!profile) return;
+    setBusyId(entry.id);
+    setErrorMsg('');
+    try {
+      await markCheckOutNow(entry.id, profile);
+      showToast(`Salida marcada: ${entry.fullName}`);
+    } catch (err) {
+      setErrorMsg(humanizeFirebaseError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
   async function handleDeleteEntry(entry) {
     if (!window.confirm(`¿Eliminar el registro de ${entry.fullName}?`)) return;
     setBusyId(entry.id);
@@ -339,6 +354,10 @@ export default function App() {
   );
   const enteredCount = useMemo(
     () => entries.filter((e) => e.status === 'INGRESO').length,
+    [entries]
+  );
+  const exitedCount = useMemo(
+    () => entries.filter((e) => e.status === 'SALIDA').length,
     [entries]
   );
   const pendingUsersCount = useMemo(
@@ -596,8 +615,12 @@ export default function App() {
                 <div className="kpi-value">{pendingCount}</div>
               </div>
               <div className="kpi-card kpi-ingreso">
-                <div className="kpi-label">Ya ingresaron</div>
+                <div className="kpi-label">En sitio</div>
                 <div className="kpi-value">{enteredCount}</div>
+              </div>
+              <div className="kpi-card kpi-salida">
+                <div className="kpi-label">Salieron</div>
+                <div className="kpi-value">{exitedCount}</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-label">
@@ -653,6 +676,7 @@ export default function App() {
                     { id: 'TODOS', label: 'Todos' },
                     { id: 'PENDIENTE', label: 'Pendiente por ingresar' },
                     { id: 'INGRESO', label: 'Ya ingresó' },
+                    { id: 'SALIDA', label: 'Ya salió' },
                   ].map((f) => (
                     <button
                       key={f.id}
@@ -718,16 +742,35 @@ export default function App() {
               <section className="entries-grid" aria-label="Lista de ingresos">
                 {filteredEntries.map((entry) => {
                   const isPending = entry.status === 'PENDIENTE';
+                  const isEntered = entry.status === 'INGRESO';
+                  const isExited = entry.status === 'SALIDA';
+                  const hasEntered = isEntered || isExited;
                   const isBusy = busyId === entry.id;
                   return (
                     <article
                       key={entry.id}
-                      className={`entry-card ${isPending ? 'is-pending' : 'is-entered'}`}
+                      className={`entry-card ${
+                        isPending ? 'is-pending' : isExited ? 'is-exited' : 'is-entered'
+                      }`}
                     >
                       <div className="entry-top">
-                        <span className={`pill ${isPending ? 'pill-pending' : 'pill-ingreso'}`}>
-                          {isPending ? <Clock size={13} /> : <CheckCircle2 size={13} />}
-                          {isPending ? 'PENDIENTE POR INGRESAR' : 'YA INGRESÓ'}
+                        <span
+                          className={`pill ${
+                            isPending ? 'pill-pending' : isExited ? 'pill-salida' : 'pill-ingreso'
+                          }`}
+                        >
+                          {isPending ? (
+                            <Clock size={13} />
+                          ) : isExited ? (
+                            <LogOut size={13} />
+                          ) : (
+                            <CheckCircle2 size={13} />
+                          )}
+                          {isPending
+                            ? 'PENDIENTE POR INGRESAR'
+                            : isExited
+                            ? 'YA SALIÓ'
+                            : 'YA INGRESÓ'}
                         </span>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           <span className="pill pill-neutral">{visitorLabel(entry.visitorType)}</span>
@@ -765,7 +808,7 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="time-compare">
+                      <div className="time-compare time-compare-3">
                         <div>
                           <div className="time-col-label">Hora programada</div>
                           <div className="time-col-val mono">
@@ -776,13 +819,27 @@ export default function App() {
                           <div className="time-col-label">Hora real de ingreso</div>
                           <div
                             className="time-col-val mono"
-                            style={{ color: isPending ? '#94a3b8' : '#34d399' }}
+                            style={{ color: !hasEntered ? '#94a3b8' : '#34d399' }}
                           >
-                            {isPending ? 'Pendiente' : formatTimeHm(entry.checkInAt)}
+                            {!hasEntered ? 'Pendiente' : formatTimeHm(entry.checkInAt)}
                           </div>
-                          {!isPending && entry.checkInByName && (
+                          {hasEntered && entry.checkInByName && (
                             <div className="time-col-sub">
                               Marcó: {entry.checkInByName} ({formatDateTimeShort(entry.checkInAt)})
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <div className="time-col-label">Hora de salida</div>
+                          <div
+                            className="time-col-val mono"
+                            style={{ color: isExited ? '#38bdf8' : '#94a3b8' }}
+                          >
+                            {isExited ? formatTimeHm(entry.checkOutAt) : isEntered ? 'En sitio' : '—'}
+                          </div>
+                          {isExited && entry.checkOutByName && (
+                            <div className="time-col-sub">
+                              Marcó: {entry.checkOutByName} ({formatDateTimeShort(entry.checkOutAt)})
                             </div>
                           )}
                         </div>
@@ -803,6 +860,18 @@ export default function App() {
                         >
                           <CheckCircle2 size={20} />
                           {isBusy ? 'Registrando...' : 'Marcar ingreso ahora'}
+                        </button>
+                      )}
+
+                      {isEntered && (
+                        <button
+                          type="button"
+                          className="btn btn-checkout"
+                          disabled={isBusy}
+                          onClick={() => handleCheckOut(entry)}
+                        >
+                          <LogOut size={20} />
+                          {isBusy ? 'Registrando salida...' : 'Marcar salida ahora'}
                         </button>
                       )}
 
@@ -1158,6 +1227,7 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
                 >
                   <option value="PENDIENTE">Pendiente por ingresar</option>
                   <option value="INGRESO">Ya ingresó</option>
+                  <option value="SALIDA">Ya salió</option>
                 </select>
               </div>
             )}

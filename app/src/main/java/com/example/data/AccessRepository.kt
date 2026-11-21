@@ -269,7 +269,7 @@ class AccessRepository(
                         AccessEntry::class.java,
                         DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                     ).sortedWith(
-                        compareBy<AccessEntry> { it.status != EntryStatus.PENDIENTE.name }
+                        compareBy<AccessEntry> { statusSortPriority(it.status) }
                             .thenByDescending { it.entryDate }
                             .thenByDescending { it.createdAt?.seconds ?: 0L }
                     )
@@ -376,14 +376,43 @@ class AccessRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
 
-            if (newStatus == EntryStatus.PENDIENTE && existingEntry.status == EntryStatus.INGRESO.name) {
-                updates["checkInAt"] = FieldValue.delete()
-                updates["checkInByUid"] = FieldValue.delete()
-                updates["checkInByName"] = FieldValue.delete()
-            } else if (newStatus == EntryStatus.INGRESO && existingEntry.status != EntryStatus.INGRESO.name) {
-                updates["checkInAt"] = FieldValue.serverTimestamp()
-                updates["checkInByUid"] = uid
-                updates["checkInByName"] = safeActorName
+            when (newStatus) {
+                EntryStatus.PENDIENTE -> {
+                    if (existingEntry.checkInAt != null || !existingEntry.checkInByUid.isNullOrBlank() || !existingEntry.checkInByName.isNullOrBlank()) {
+                        updates["checkInAt"] = FieldValue.delete()
+                        updates["checkInByUid"] = FieldValue.delete()
+                        updates["checkInByName"] = FieldValue.delete()
+                    }
+                    if (existingEntry.checkOutAt != null || !existingEntry.checkOutByUid.isNullOrBlank() || !existingEntry.checkOutByName.isNullOrBlank()) {
+                        updates["checkOutAt"] = FieldValue.delete()
+                        updates["checkOutByUid"] = FieldValue.delete()
+                        updates["checkOutByName"] = FieldValue.delete()
+                    }
+                }
+                EntryStatus.INGRESO -> {
+                    if (existingEntry.checkInAt == null || existingEntry.checkInByUid.isNullOrBlank() || existingEntry.checkInByName.isNullOrBlank()) {
+                        updates["checkInAt"] = FieldValue.serverTimestamp()
+                        updates["checkInByUid"] = uid
+                        updates["checkInByName"] = safeActorName
+                    }
+                    if (existingEntry.checkOutAt != null || !existingEntry.checkOutByUid.isNullOrBlank() || !existingEntry.checkOutByName.isNullOrBlank()) {
+                        updates["checkOutAt"] = FieldValue.delete()
+                        updates["checkOutByUid"] = FieldValue.delete()
+                        updates["checkOutByName"] = FieldValue.delete()
+                    }
+                }
+                EntryStatus.SALIDA -> {
+                    if (existingEntry.checkInAt == null || existingEntry.checkInByUid.isNullOrBlank() || existingEntry.checkInByName.isNullOrBlank()) {
+                        updates["checkInAt"] = FieldValue.serverTimestamp()
+                        updates["checkInByUid"] = uid
+                        updates["checkInByName"] = safeActorName
+                    }
+                    if (existingEntry.status != EntryStatus.SALIDA.name || existingEntry.checkOutAt == null) {
+                        updates["checkOutAt"] = FieldValue.serverTimestamp()
+                        updates["checkOutByUid"] = uid
+                        updates["checkOutByName"] = safeActorName
+                    }
+                }
             }
 
             db.collection("entries").document(entryId).update(updates).await()
@@ -424,6 +453,43 @@ class AccessRepository(
             handleFirestoreError(e, OperationType.UPDATE, docPath)
             Result.failure(e)
         }
+    }
+
+    suspend fun markCheckOutNow(
+        entryId: String,
+        actorUid: String,
+        actorName: String
+    ): Result<Unit> {
+        val docPath = "entries/$entryId"
+        return try {
+            val uid = requireUserId()
+            check(uid == actorUid) { "La sesión cambió; reintente." }
+            require(entryId.isNotBlank()) { "ID de registro inválido." }
+            val safeActorName = actorName.trim().take(120).ifBlank { "Operador" }
+
+            db.collection("entries").document(entryId).update(
+                mapOf(
+                    "status" to EntryStatus.SALIDA.name,
+                    "checkOutAt" to FieldValue.serverTimestamp(),
+                    "checkOutByUid" to uid,
+                    "checkOutByName" to safeActorName,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    private fun statusSortPriority(status: String): Int = when (status) {
+        EntryStatus.PENDIENTE.name -> 0
+        EntryStatus.INGRESO.name -> 1
+        EntryStatus.SALIDA.name -> 2
+        else -> 3
     }
 
     suspend fun deleteEntry(entryId: String): Result<Unit> {

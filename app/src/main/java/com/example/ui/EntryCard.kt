@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Assignment
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.Badge
@@ -47,6 +48,9 @@ import com.example.ui.theme.Amber900
 import com.example.ui.theme.Emerald100
 import com.example.ui.theme.Emerald600
 import com.example.ui.theme.Emerald900
+import com.example.ui.theme.Sky100
+import com.example.ui.theme.Sky600
+import com.example.ui.theme.Sky900
 import com.example.util.DateTimeUtils
 
 @Composable
@@ -55,15 +59,42 @@ fun EntryCard(
     isAdminActionsEnabled: Boolean,
     isBusy: Boolean,
     onCheckInNow: () -> Unit,
+    onCheckOutNow: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isCheckedIn = entry.parsedStatus == EntryStatus.INGRESO
-    val borderColor = if (isCheckedIn) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-    } else {
-        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.65f)
+    val parsedStatus = entry.parsedStatus
+    val isPending = parsedStatus == EntryStatus.PENDIENTE
+    val isCheckedIn = parsedStatus == EntryStatus.INGRESO
+    val isCheckedOut = parsedStatus == EntryStatus.SALIDA
+    val hasEntered = isCheckedIn || isCheckedOut
+
+    val borderColor = when (parsedStatus) {
+        EntryStatus.PENDIENTE -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.65f)
+        EntryStatus.INGRESO -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+        EntryStatus.SALIDA -> Sky600.copy(alpha = 0.45f)
+    }
+
+    val badgeContainerColor = when (parsedStatus) {
+        EntryStatus.PENDIENTE -> Amber100
+        EntryStatus.INGRESO -> Emerald100
+        EntryStatus.SALIDA -> Sky100
+    }
+    val badgeContentColor = when (parsedStatus) {
+        EntryStatus.PENDIENTE -> Amber900
+        EntryStatus.INGRESO -> Emerald900
+        EntryStatus.SALIDA -> Sky900
+    }
+    val badgeIcon = when (parsedStatus) {
+        EntryStatus.PENDIENTE -> Icons.Filled.Schedule
+        EntryStatus.INGRESO -> Icons.Filled.CheckCircle
+        EntryStatus.SALIDA -> Icons.AutoMirrored.Filled.Logout
+    }
+    val badgeText = when (parsedStatus) {
+        EntryStatus.PENDIENTE -> "PENDIENTE"
+        EntryStatus.INGRESO -> "YA INGRESÓ"
+        EntryStatus.SALIDA -> "YA SALIÓ"
     }
 
     Card(
@@ -92,7 +123,7 @@ fun EntryCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Surface(
-                        color = if (isCheckedIn) Emerald100 else Amber100,
+                        color = badgeContainerColor,
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Row(
@@ -101,16 +132,16 @@ fun EntryCard(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = if (isCheckedIn) Icons.Filled.CheckCircle else Icons.Filled.Schedule,
+                                imageVector = badgeIcon,
                                 contentDescription = null,
-                                tint = if (isCheckedIn) Emerald900 else Amber900,
+                                tint = badgeContentColor,
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
-                                text = if (isCheckedIn) "YA INGRESÓ" else "PENDIENTE",
+                                text = badgeText,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isCheckedIn) Emerald900 else Amber900
+                                color = badgeContentColor
                             )
                         }
                     }
@@ -261,7 +292,7 @@ fun EntryCard(
                 }
             }
 
-            // Hora programada vs Hora real de ingreso
+            // Hora programada vs Hora real de ingreso vs Hora de salida
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                 shape = RoundedCornerShape(10.dp),
@@ -269,12 +300,12 @@ fun EntryCard(
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1.35f)) {
                         Text(
-                            text = "Hora programada",
+                            text = "Programada",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -292,25 +323,52 @@ fun EntryCard(
                                 text = "${DateTimeUtils.formatIsoToDisplay(entry.entryDate)} · ${entry.expectedTime.ifBlank { "Sin hora" }}",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
 
                     Column(
-                        horizontalAlignment = Alignment.End,
-                        modifier = Modifier.weight(1f)
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.weight(0.8f)
                     ) {
                         Text(
-                            text = "Hora real de ingreso",
+                            text = "Ingreso",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = if (isCheckedIn) DateTimeUtils.formatTime(entry.checkInAt) else "Pendiente",
+                            text = if (hasEntered) DateTimeUtils.formatTime(entry.checkInAt) else "Pendiente",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = if (isCheckedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                            color = if (hasEntered) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier.weight(0.8f)
+                    ) {
+                        Text(
+                            text = "Salida",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = when {
+                                isCheckedOut -> DateTimeUtils.formatTime(entry.checkOutAt)
+                                isCheckedIn -> "En sitio"
+                                else -> "--:--"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                isCheckedOut -> Sky600
+                                isCheckedIn -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
                 }
@@ -334,8 +392,8 @@ fun EntryCard(
                 )
             }
 
-            // Action area: Quick check-in button OR audit trail of check-in
-            if (!isCheckedIn) {
+            // Action area: Check-in button, Check-out button, or complete audit trail
+            if (isPending) {
                 Button(
                     onClick = onCheckInNow,
                     enabled = !isBusy,
@@ -371,9 +429,77 @@ fun EntryCard(
                         )
                     }
                 }
+            } else if (isCheckedIn) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Ingreso efectivo: ${DateTimeUtils.formatDateTime(entry.checkInAt)}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Registrado por: ${entry.checkInByName ?: "Personal en turno"}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = "Ingreso completado",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = onCheckOutNow,
+                        enabled = !isBusy,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("check_out_button_${entry.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Sky600,
+                            contentColor = MaterialTheme.colorScheme.surface
+                        )
+                    ) {
+                        if (isBusy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Registrando salida...", style = MaterialTheme.typography.labelLarge)
+                        } else {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Logout,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Marcar salida ahora",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             } else {
                 Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                    color = Sky100.copy(alpha = 0.85f),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -382,22 +508,31 @@ fun EntryCard(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
                             Text(
-                                text = "Ingreso efectivo: ${DateTimeUtils.formatDateTime(entry.checkInAt)}",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                text = "Ingreso: ${DateTimeUtils.formatDateTime(entry.checkInAt)} · ${entry.checkInByName ?: "Personal en turno"}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Sky900
                             )
                             Text(
-                                text = "Registrado por: ${entry.checkInByName ?: "Personal en turno"}",
+                                text = "Salida efectiva: ${DateTimeUtils.formatDateTime(entry.checkOutAt)}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Sky900
+                            )
+                            Text(
+                                text = "Salida marcada por: ${entry.checkOutByName ?: "Personal en turno"}",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                color = Sky900
                             )
                         }
                         Icon(
-                            imageVector = Icons.Filled.CheckCircle,
-                            contentDescription = "Ingreso completado",
-                            tint = MaterialTheme.colorScheme.primary
+                            imageVector = Icons.AutoMirrored.Filled.Logout,
+                            contentDescription = "Salida completada",
+                            tint = Sky600
                         )
                     }
                 }

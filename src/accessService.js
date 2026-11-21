@@ -62,7 +62,7 @@ export function getTimestampMillis(ts) {
 }
 
 export function getEntryHour(entry) {
-  if (entry.status === 'INGRESO' && entry.checkInAt) {
+  if ((entry.status === 'INGRESO' || entry.status === 'SALIDA') && entry.checkInAt) {
     const date =
       typeof entry.checkInAt.toDate === 'function'
         ? entry.checkInAt.toDate()
@@ -143,9 +143,12 @@ export function subscribeEntries(unitId, dateIsoOrNull, onData, onError) {
     q,
     (snap) => {
       const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const statusOrder = { PENDIENTE: 0, INGRESO: 1, SALIDA: 2 };
       items.sort((a, b) => {
-        if (a.status !== b.status) {
-          return a.status === 'PENDIENTE' ? -1 : 1;
+        const sA = statusOrder[a.status] ?? 9;
+        const sB = statusOrder[b.status] ?? 9;
+        if (sA !== sB) {
+          return sA - sB;
         }
         if ((a.entryDate || '') !== (b.entryDate || '')) {
           return (b.entryDate || '').localeCompare(a.entryDate || '');
@@ -249,7 +252,12 @@ export async function updateEntry(entry, draft, currentUser) {
   if (safeName.length < 2) {
     throw new Error('El nombre debe tener al menos 2 caracteres.');
   }
-  const nextStatus = draft.status === 'INGRESO' ? 'INGRESO' : 'PENDIENTE';
+  const nextStatus =
+    draft.status === 'SALIDA'
+      ? 'SALIDA'
+      : draft.status === 'INGRESO'
+      ? 'INGRESO'
+      : 'PENDIENTE';
   const entryDate = isValidIsoDate(draft.entryDate) ? draft.entryDate : entry.entryDate;
 
   const updates = {
@@ -267,14 +275,41 @@ export async function updateEntry(entry, draft, currentUser) {
     updatedAt: serverTimestamp(),
   };
 
-  if (nextStatus === 'PENDIENTE' && entry.status === 'INGRESO') {
-    updates.checkInAt = deleteField();
-    updates.checkInByUid = deleteField();
-    updates.checkInByName = deleteField();
-  } else if (nextStatus === 'INGRESO' && entry.status === 'PENDIENTE') {
-    updates.checkInAt = serverTimestamp();
-    updates.checkInByUid = currentUser.userId;
-    updates.checkInByName = ((currentUser.displayName || currentUser.email || 'Admin').trim()).slice(0, 120);
+  const actorName = ((currentUser.displayName || currentUser.email || 'Admin').trim()).slice(0, 120);
+
+  if (nextStatus === 'PENDIENTE') {
+    if (entry.checkInAt || entry.checkInByUid || entry.checkInByName) {
+      updates.checkInAt = deleteField();
+      updates.checkInByUid = deleteField();
+      updates.checkInByName = deleteField();
+    }
+    if (entry.checkOutAt || entry.checkOutByUid || entry.checkOutByName) {
+      updates.checkOutAt = deleteField();
+      updates.checkOutByUid = deleteField();
+      updates.checkOutByName = deleteField();
+    }
+  } else if (nextStatus === 'INGRESO') {
+    if (!entry.checkInAt || !entry.checkInByUid || !entry.checkInByName) {
+      updates.checkInAt = serverTimestamp();
+      updates.checkInByUid = currentUser.userId;
+      updates.checkInByName = actorName;
+    }
+    if (entry.checkOutAt || entry.checkOutByUid || entry.checkOutByName) {
+      updates.checkOutAt = deleteField();
+      updates.checkOutByUid = deleteField();
+      updates.checkOutByName = deleteField();
+    }
+  } else if (nextStatus === 'SALIDA') {
+    if (!entry.checkInAt || !entry.checkInByUid || !entry.checkInByName) {
+      updates.checkInAt = serverTimestamp();
+      updates.checkInByUid = currentUser.userId;
+      updates.checkInByName = actorName;
+    }
+    if (entry.status !== 'SALIDA' || !entry.checkOutAt) {
+      updates.checkOutAt = serverTimestamp();
+      updates.checkOutByUid = currentUser.userId;
+      updates.checkOutByName = actorName;
+    }
   }
 
   await updateDoc(doc(db, 'entries', entry.id), updates);
@@ -287,6 +322,17 @@ export async function markCheckInNow(entryId, currentUser) {
     checkInAt: serverTimestamp(),
     checkInByUid: currentUser.userId,
     checkInByName: safeCheckerName,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function markCheckOutNow(entryId, currentUser) {
+  const safeCheckerName = ((currentUser.displayName || currentUser.email || 'Operador').trim()).slice(0, 120);
+  await updateDoc(doc(db, 'entries', entryId), {
+    status: 'SALIDA',
+    checkOutAt: serverTimestamp(),
+    checkOutByUid: currentUser.userId,
+    checkOutByName: safeCheckerName,
     updatedAt: serverTimestamp(),
   });
 }

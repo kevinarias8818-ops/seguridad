@@ -87,7 +87,7 @@ service cloud.firestore {
              data.expectedTime is string && data.expectedTime.size() <= 20 &&
              data.source in ['MANUAL', 'CORREO_INSTITUCIONAL'] &&
              data.notes is string && data.notes.size() <= 300 &&
-             data.status in ['PENDIENTE', 'INGRESO'] &&
+             data.status in ['PENDIENTE', 'INGRESO', 'SALIDA'] &&
              data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
              data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
@@ -95,9 +95,19 @@ service cloud.firestore {
              (!('checkInAt' in data) || (data.checkInAt is timestamp && data.checkInAt <= request.time)) &&
              (!('checkInByUid' in data) || (data.checkInByUid is string && data.checkInByUid.size() >= 1 && data.checkInByUid.size() <= 128)) &&
              (!('checkInByName' in data) || (data.checkInByName is string && data.checkInByName.size() >= 1 && data.checkInByName.size() <= 120)) &&
+             (!('checkOutAt' in data) || (data.checkOutAt is timestamp && data.checkOutAt <= request.time)) &&
+             (!('checkOutByUid' in data) || (data.checkOutByUid is string && data.checkOutByUid.size() >= 1 && data.checkOutByUid.size() <= 128)) &&
+             (!('checkOutByName' in data) || (data.checkOutByName is string && data.checkOutByName.size() >= 1 && data.checkOutByName.size() <= 120)) &&
              (
-               (data.status == 'PENDIENTE' && !('checkInAt' in data) && !('checkInByUid' in data) && !('checkInByName' in data)) ||
-               (data.status == 'INGRESO' && ('checkInAt' in data) && ('checkInByUid' in data) && ('checkInByName' in data))
+               (data.status == 'PENDIENTE' &&
+                !('checkInAt' in data) && !('checkInByUid' in data) && !('checkInByName' in data) &&
+                !('checkOutAt' in data) && !('checkOutByUid' in data) && !('checkOutByName' in data)) ||
+               (data.status == 'INGRESO' &&
+                ('checkInAt' in data) && ('checkInByUid' in data) && ('checkInByName' in data) &&
+                !('checkOutAt' in data) && !('checkOutByUid' in data) && !('checkOutByName' in data)) ||
+               (data.status == 'SALIDA' &&
+                ('checkInAt' in data) && ('checkInByUid' in data) && ('checkInByName' in data) &&
+                ('checkOutAt' in data) && ('checkOutByUid' in data) && ('checkOutByName' in data))
              );
     }
 
@@ -190,6 +200,7 @@ service cloud.firestore {
                          'unitId', 'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
                          'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
                          'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
+                         'checkOutAt', 'checkOutByUid', 'checkOutByName',
                          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
                        ]) &&
                        isAdmin() &&
@@ -198,7 +209,7 @@ service cloud.firestore {
 
       // Tiered Update:
       // 1. Admin can edit fields or adjust status
-      // 2. Active Operator can ONLY check in a PENDIENTE entry -> INGRESO
+      // 2. Active Operator can check in PENDIENTE -> INGRESO or check out INGRESO -> SALIDA
       allow update: if isSignedIn() &&
                        isValidId(entryId) &&
                        isValidEntry(incoming()) &&
@@ -213,13 +224,20 @@ service cloud.firestore {
                           incoming().diff(existing()).affectedKeys().hasOnly([
                             'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
                             'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
-                            'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName', 'updatedAt'
+                            'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
+                            'checkOutAt', 'checkOutByUid', 'checkOutByName', 'updatedAt'
                           ])) ||
                          (existing().status == 'PENDIENTE' &&
                           incoming().status == 'INGRESO' &&
                           incoming().checkInByUid == request.auth.uid &&
                           incoming().diff(existing()).affectedKeys().hasOnly([
                             'status', 'checkInAt', 'checkInByUid', 'checkInByName', 'updatedAt'
+                          ])) ||
+                         (existing().status == 'INGRESO' &&
+                          incoming().status == 'SALIDA' &&
+                          incoming().checkOutByUid == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'status', 'checkOutAt', 'checkOutByUid', 'checkOutByName', 'updatedAt'
                           ]))
                        );
 

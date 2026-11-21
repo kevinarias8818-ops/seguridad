@@ -54,7 +54,8 @@ enum class EntrySource(val label: String) {
 
 enum class EntryStatus(val label: String) {
     PENDIENTE("Pendiente"),
-    INGRESO("Ya ingresó");
+    INGRESO("Ya ingresó"),
+    SALIDA("Ya salió");
 
     companion object {
         fun fromRaw(raw: String?): EntryStatus =
@@ -98,6 +99,9 @@ data class AccessEntry(
     val checkInAt: Timestamp? = null,
     val checkInByUid: String? = null,
     val checkInByName: String? = null,
+    val checkOutAt: Timestamp? = null,
+    val checkOutByUid: String? = null,
+    val checkOutByName: String? = null,
     val createdByUid: String = "",
     val createdByName: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,

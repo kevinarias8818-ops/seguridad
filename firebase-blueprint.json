@@ -109,7 +109,7 @@
         },
         "status": {
           "type": "string",
-          "enum": ["PENDIENTE", "INGRESO"],
+          "enum": ["PENDIENTE", "INGRESO", "SALIDA"],
           "description": "Estado actual del ingreso."
         },
         "checkInAt": {
@@ -124,6 +124,19 @@
         "checkInByName": {
           "type": "string",
           "description": "Nombre visible de quien marcó el ingreso."
+        },
+        "checkOutAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora efectiva de salida (FieldValue.serverTimestamp())."
+        },
+        "checkOutByUid": {
+          "type": "string",
+          "description": "UID del operador o administrador que marcó la salida."
+        },
+        "checkOutByName": {
+          "type": "string",
+          "description": "Nombre visible de quien marcó la salida."
         },
         "createdByUid": {
           "type": "string",

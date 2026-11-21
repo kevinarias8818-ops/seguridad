@@ -19,19 +19,35 @@ exports.notifyAdminsOnEntryEvent = onDocumentWritten(
     if (!after) return;
 
     const isNewEntry = !before;
-    const becameCheckedIn = before && before.status !== 'INGRESO' && after.status === 'INGRESO';
-    if (!isNewEntry && !becameCheckedIn) return;
+    const becameCheckedIn = before && before.status === 'PENDIENTE' && after.status === 'INGRESO';
+    const becameCheckedOut = before && before.status !== 'SALIDA' && after.status === 'SALIDA';
+    if (!isNewEntry && !becameCheckedIn && !becameCheckedOut) return;
 
     const unitId = after.unitId || 'UNIDAD_PRINCIPAL';
     const personLabel = [after.rank, after.fullName].filter(Boolean).join(' ').trim();
-    const actorUid = becameCheckedIn ? after.checkInByUid : after.createdByUid;
+    const actorUid = becameCheckedOut
+      ? after.checkOutByUid
+      : becameCheckedIn
+      ? after.checkInByUid
+      : after.createdByUid;
 
-    const title = becameCheckedIn
+    const statusLabel =
+      after.status === 'SALIDA'
+        ? 'Ya salió'
+        : after.status === 'INGRESO'
+        ? 'Ya ingresó'
+        : 'Pendiente';
+
+    const title = becameCheckedOut
+      ? `Salida registrada: ${personLabel}`
+      : becameCheckedIn
       ? `Nuevo ingreso registrado: ${personLabel}`
       : `Nuevo registro autorizado: ${personLabel}`;
-    const body = becameCheckedIn
+    const body = becameCheckedOut
+      ? `${after.destinationUnit} · Marcado por ${after.checkOutByName || 'Operador'}`
+      : becameCheckedIn
       ? `${after.destinationUnit} · Marcado por ${after.checkInByName || 'Operador'}`
-      : `${after.destinationUnit} · Estado: ${after.status === 'INGRESO' ? 'Ya ingresó' : 'Pendiente'}`;
+      : `${after.destinationUnit} · Estado: ${statusLabel}`;
 
     const db = getFirestore(DATABASE_ID);
     const adminUsersSnap = await db

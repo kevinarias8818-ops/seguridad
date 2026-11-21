@@ -408,6 +408,7 @@ fun MainDashboardRoute(
                                 filterState = filterState,
                                 busyEntryId = busyEntryId,
                                 gridColumns = gridColumns,
+                                isWideMetrics = this@BoxWithConstraints.maxWidth >= 560.dp,
                                 onSearchChange = viewModel::updateSearchQuery,
                                 onStatusFilterChange = viewModel::updateStatusFilter,
                                 onDateScopeChange = viewModel::updateDateScope,
@@ -415,6 +416,7 @@ fun MainDashboardRoute(
                                 onOpenEmailImport = { showEmailImportDialog = true },
                                 onOpenCreateEntry = { showCreateDialog = true },
                                 onCheckInNow = viewModel::markCheckInNow,
+                                onCheckOutNow = viewModel::markCheckOutNow,
                                 onEditEntry = { editingEntry = it },
                                 onDeleteEntry = { entryToDelete = it },
                                 onRestoreAdminMode = { viewModel.toggleSimulateOperatorMode(false) },
@@ -492,6 +494,7 @@ private fun EntriesDashboardContent(
     filterState: DashboardFilterState,
     busyEntryId: String?,
     gridColumns: Int,
+    isWideMetrics: Boolean,
     onSearchChange: (String) -> Unit,
     onStatusFilterChange: (EntryStatusFilter) -> Unit,
     onDateScopeChange: (DateScopeFilter) -> Unit,
@@ -499,6 +502,7 @@ private fun EntriesDashboardContent(
     onOpenEmailImport: () -> Unit,
     onOpenCreateEntry: () -> Unit,
     onCheckInNow: (AccessEntry) -> Unit,
+    onCheckOutNow: (AccessEntry) -> Unit,
     onEditEntry: (AccessEntry) -> Unit,
     onDeleteEntry: (AccessEntry) -> Unit,
     onRestoreAdminMode: () -> Unit,
@@ -519,6 +523,7 @@ private fun EntriesDashboardContent(
                 EntryStatusFilter.ALL -> true
                 EntryStatusFilter.PENDING -> entry.parsedStatus == EntryStatus.PENDIENTE
                 EntryStatusFilter.CHECKED_IN -> entry.parsedStatus == EntryStatus.INGRESO
+                EntryStatusFilter.CHECKED_OUT -> entry.parsedStatus == EntryStatus.SALIDA
             }
             val matchesTime = DateTimeUtils.matchesTimeSlot(
                 checkInAt = entry.checkInAt,
@@ -532,6 +537,7 @@ private fun EntriesDashboardContent(
 
     val pendingCount = allEntries.count { it.parsedStatus == EntryStatus.PENDIENTE }
     val checkedInCount = allEntries.count { it.parsedStatus == EntryStatus.INGRESO }
+    val checkedOutCount = allEntries.count { it.parsedStatus == EntryStatus.SALIDA }
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -623,31 +629,89 @@ private fun EntriesDashboardContent(
 
             // Metrics Summary Header
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    SummaryMetricCard(
-                        title = "Pendientes",
-                        value = pendingCount.toString(),
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                        modifier = Modifier.weight(1f)
-                    )
-                    SummaryMetricCard(
-                        title = "Ya ingresaron",
-                        value = checkedInCount.toString(),
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.weight(1f)
-                    )
-                    SummaryMetricCard(
-                        title = if (isEffectiveAdmin && filterState.dateScope == DateScopeFilter.FULL_HISTORY) "Total" else "Hoy",
-                        value = allEntries.size.toString(),
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f)
-                    )
+                val totalLabel = if (isEffectiveAdmin && filterState.dateScope == DateScopeFilter.FULL_HISTORY) {
+                    "Total"
+                } else {
+                    "Hoy"
+                }
+                if (isWideMetrics) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        SummaryMetricCard(
+                            title = "Pendientes",
+                            value = pendingCount.toString(),
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SummaryMetricCard(
+                            title = "En sitio",
+                            value = checkedInCount.toString(),
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SummaryMetricCard(
+                            title = "Salieron",
+                            value = checkedOutCount.toString(),
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SummaryMetricCard(
+                            title = totalLabel,
+                            value = allEntries.size.toString(),
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            SummaryMetricCard(
+                                title = "Pendientes",
+                                value = pendingCount.toString(),
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SummaryMetricCard(
+                                title = "En sitio",
+                                value = checkedInCount.toString(),
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            SummaryMetricCard(
+                                title = "Salieron",
+                                value = checkedOutCount.toString(),
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.weight(1f)
+                            )
+                            SummaryMetricCard(
+                                title = totalLabel,
+                                value = allEntries.size.toString(),
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -837,6 +901,7 @@ private fun EntriesDashboardContent(
                                 isAdminActionsEnabled = isEffectiveAdmin,
                                 isBusy = busyEntryId == entry.id,
                                 onCheckInNow = { onCheckInNow(entry) },
+                                onCheckOutNow = { onCheckOutNow(entry) },
                                 onEdit = { onEditEntry(entry) },
                                 onDelete = { onDeleteEntry(entry) }
                             )

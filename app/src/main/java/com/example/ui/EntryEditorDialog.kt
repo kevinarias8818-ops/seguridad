@@ -191,7 +191,12 @@ fun EntryEditorDialog(
                         text = "Estado",
                         style = MaterialTheme.typography.labelLarge
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         EntryStatus.entries.forEach { st ->
                             FilterChip(
                                 selected = status == st,

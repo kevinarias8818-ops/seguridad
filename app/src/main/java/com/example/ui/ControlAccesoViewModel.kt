@@ -42,7 +42,8 @@ data class EntryPushAlert(
 enum class EntryStatusFilter(val label: String) {
     ALL("Todos"),
     PENDING("Pendiente por ingresar"),
-    CHECKED_IN("Ya ingresó")
+    CHECKED_IN("Ya ingresó"),
+    CHECKED_OUT("Ya salió")
 }
 
 enum class DateScopeFilter(val label: String) {
@@ -259,6 +260,24 @@ class ControlAccesoViewModel(
         }
     }
 
+    fun markCheckOutNow(entry: AccessEntry) {
+        val profile = (profileState.value as? UiState.Success)?.data ?: return
+        viewModelScope.launch {
+            _busyEntryId.value = entry.id
+            val result = repository.markCheckOutNow(
+                entryId = entry.id,
+                actorUid = currentUserId,
+                actorName = profile.displayName
+            )
+            _busyEntryId.value = null
+            result.onSuccess {
+                _snackbarEvents.tryEmit("Salida registrada: ${entry.fullName}")
+            }.onFailure { error ->
+                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo marcar la salida")
+            }
+        }
+    }
+
     fun createEntry(draft: EntryDraft, onDone: () -> Unit) {
         if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
@@ -401,9 +420,14 @@ class ControlAccesoViewModel(
                 .ifBlank { entry.fullName }
 
             val becameCheckedIn = prevStatus != null &&
-                prevStatus != EntryStatus.INGRESO.name &&
+                prevStatus == EntryStatus.PENDIENTE.name &&
                 entry.status == EntryStatus.INGRESO.name &&
                 entry.checkInByUid != currentUserId
+
+            val becameCheckedOut = prevStatus != null &&
+                prevStatus != EntryStatus.SALIDA.name &&
+                entry.status == EntryStatus.SALIDA.name &&
+                entry.checkOutByUid != currentUserId
 
             val createdBySomeoneElse = prevStatus == null &&
                 entry.createdByUid != currentUserId
@@ -417,8 +441,17 @@ class ControlAccesoViewModel(
                         body = "${entry.destinationUnit} · Marcado por $actor"
                     )
                 )
+            } else if (becameCheckedOut) {
+                val actor = entry.checkOutByName.orEmpty().ifBlank { "Operador" }
+                _entryAlerts.tryEmit(
+                    EntryPushAlert(
+                        entryId = entry.id,
+                        title = "Salida registrada: $personLabel",
+                        body = "${entry.destinationUnit} · Marcado por $actor"
+                    )
+                )
             } else if (createdBySomeoneElse) {
-                val stateLabel = if (entry.parsedStatus == EntryStatus.INGRESO) "Ya ingresó" else "Pendiente"
+                val stateLabel = entry.parsedStatus.label
                 _entryAlerts.tryEmit(
                     EntryPushAlert(
                         entryId = entry.id,
