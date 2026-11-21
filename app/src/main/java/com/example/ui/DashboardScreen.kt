@@ -36,6 +36,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.HourglassTop
@@ -120,6 +122,7 @@ fun MainDashboardRoute(
     val busyEntryId by viewModel.busyEntryId.collectAsStateWithLifecycle()
     val isSubmitting by viewModel.isSubmitting.collectAsStateWithLifecycle()
     val excelExportState by viewModel.excelExportState.collectAsStateWithLifecycle()
+    val syncStatus by viewModel.syncStatusState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -137,6 +140,9 @@ fun MainDashboardRoute(
 
     val profile = (profileState as? UiState.Success)?.data
     val isRealAdmin = profile?.parsedRole == UserRole.ADMIN && profile.active
+    val isActiveStaff = profile != null &&
+        profile.active &&
+        (profile.parsedRole == UserRole.ADMIN || profile.parsedRole == UserRole.OPERATOR)
     val isEffectiveAdmin = isRealAdmin && !simulateOperator
     val isPendingApproval = profile != null &&
         (profile.parsedRole == UserRole.PENDING || !profile.active)
@@ -154,27 +160,30 @@ fun MainDashboardRoute(
 
     LaunchedEffect(profile?.userId, profile?.role, profile?.active) {
         val loadedProfile = profile ?: return@LaunchedEffect
-        if (loadedProfile.parsedRole == UserRole.ADMIN && loadedProfile.active) {
+        val staffRole = loadedProfile.parsedRole
+        if (loadedProfile.active && (staffRole == UserRole.ADMIN || staffRole == UserRole.OPERATOR)) {
             NotificationHelper.ensureChannel(context)
-            viewModel.syncAdminPushToken(context, loadedProfile.unitId)
+            viewModel.syncStaffPushToken(context, loadedProfile.unitId, staffRole)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 !NotificationHelper.hasNotificationPermission(context)
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         } else {
-            viewModel.unregisterNonAdminPush(loadedProfile.unitId)
+            viewModel.unregisterInactivePush(loadedProfile.unitId)
         }
     }
 
-    LaunchedEffect(isRealAdmin) {
-        if (!isRealAdmin) return@LaunchedEffect
+    LaunchedEffect(isActiveStaff) {
+        if (!isActiveStaff) return@LaunchedEffect
         viewModel.entryAlerts.collect { alert ->
+            val tag = if (alert.status.isNotBlank()) "${alert.entryId}_${alert.status}" else alert.entryId
             NotificationHelper.showEntryAlert(
                 context = context,
                 title = alert.title,
                 body = alert.body,
-                entryId = alert.entryId
+                entryId = alert.entryId,
+                notificationTag = tag
             )
             snackbarHostState.showSnackbar(alert.title)
         }
@@ -219,10 +228,11 @@ fun MainDashboardRoute(
                                     isRealAdmin -> "Vista Operador"
                                     else -> "Operador"
                                 }
+                                val statusSuffix = if (!syncStatus.isOnline) " · Sin internet (Modo Offline)" else ""
                                 Text(
-                                    text = "${profile.displayName} · $roleText",
+                                    text = "${profile.displayName} · $roleText$statusSuffix",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = if (isPendingApproval) {
+                                    color = if (!syncStatus.isOnline || isPendingApproval) {
                                         MaterialTheme.colorScheme.tertiary
                                     } else {
                                         MaterialTheme.colorScheme.primary
@@ -404,7 +414,7 @@ fun MainDashboardRoute(
                                 profile = profState.data,
                                 isEffectiveAdmin = isEffectiveAdmin,
                                 isSimulatingOperator = isRealAdmin && simulateOperator,
-                                showEnableNotificationsBanner = isRealAdmin && !hasNotificationPermission,
+                                showEnableNotificationsBanner = isActiveStaff && !hasNotificationPermission,
                                 onRequestNotifications = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                         notificationPermissionLauncher.launch(
@@ -413,6 +423,7 @@ fun MainDashboardRoute(
                                     }
                                 },
                                 entriesState = entriesState,
+                                syncStatus = syncStatus,
                                 filterState = filterState,
                                 busyEntryId = busyEntryId,
                                 gridColumns = gridColumns,
@@ -517,6 +528,7 @@ private fun EntriesDashboardContent(
     showEnableNotificationsBanner: Boolean,
     onRequestNotifications: () -> Unit,
     entriesState: UiState<List<AccessEntry>>,
+    syncStatus: SyncStatusState,
     filterState: DashboardFilterState,
     busyEntryId: String?,
     gridColumns: Int,
@@ -581,6 +593,78 @@ private fun EntriesDashboardContent(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (!syncStatus.isOnline || syncStatus.pendingSyncIds.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    val isOffline = !syncStatus.isOnline
+                    val pendingCount = syncStatus.pendingSyncIds.size
+                    Surface(
+                        color = if (isOffline) {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("offline_sync_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (isOffline) Icons.Filled.CloudOff else Icons.Filled.CloudSync,
+                                contentDescription = null,
+                                tint = if (isOffline) {
+                                    MaterialTheme.colorScheme.onTertiaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                },
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = if (isOffline) {
+                                        "Modo Offline activo (Sin conexión en guardia)"
+                                    } else {
+                                        "Sincronizando cambios con la nube..."
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isOffline) {
+                                        MaterialTheme.colorScheme.onTertiaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    }
+                                )
+                                Text(
+                                    text = buildString {
+                                        if (isOffline) {
+                                            append("Puedes consultar la caché local, marcar ingresos/salidas y adjuntar placas. ")
+                                        }
+                                        if (pendingCount > 0) {
+                                            append("$pendingCount registro(s) pendiente(s) de sincronizar al volver el internet.")
+                                        } else {
+                                            append("Los cambios quedarán guardados en el dispositivo.")
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isOffline) {
+                                        MaterialTheme.colorScheme.onTertiaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             if (showEnableNotificationsBanner) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Surface(
@@ -604,7 +688,11 @@ private fun EntriesDashboardContent(
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                                 Text(
-                                    text = "Activa las notificaciones para recibir alertas de nuevos ingresos.",
+                                    text = if (isEffectiveAdmin) {
+                                        "Activa las notificaciones para recibir alertas de nuevos ingresos y salidas."
+                                    } else {
+                                        "Activa las notificaciones para recibir alertas de nuevos ingresos."
+                                    },
                                     style = MaterialTheme.typography.labelLarge,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
@@ -951,6 +1039,7 @@ private fun EntriesDashboardContent(
                                 entry = entry,
                                 isAdminActionsEnabled = isEffectiveAdmin,
                                 isBusy = busyEntryId == entry.id,
+                                isPendingSync = entry.id in syncStatus.pendingSyncIds,
                                 onCheckInNow = { attachment -> onCheckInNow(entry, attachment) },
                                 onCheckOutNow = { onCheckOutNow(entry) },
                                 onAttachPlateImage = { attachment -> onAttachPlateImage(entry, attachment) },

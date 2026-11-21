@@ -15,14 +15,15 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.auth.AuthScreen
 import com.example.data.AccessRepository
+import com.example.data.FirestoreDatabaseProvider
 import com.example.ui.ControlAccesoViewModel
 import com.example.ui.MainDashboardRoute
 import com.example.ui.theme.ControlAccesoTheme
+import com.example.util.NetworkMonitor
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -64,11 +65,16 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
                         val app = checkNotNull(this[APPLICATION_KEY]) {
                             "APPLICATION_KEY missing from CreationExtras"
                         }
-                        val databaseId = app.getString(R.string.firestore_database_id)
-                        val db = FirebaseFirestore.getInstance(databaseId)
+                        val db = FirestoreDatabaseProvider.getInstance(app)
+                        val networkMonitor = NetworkMonitor(app)
                         ControlAccesoViewModel(
-                            repository = AccessRepository(db),
-                            currentUserId = user.uid
+                            repository = AccessRepository(
+                                db = db,
+                                auth = auth,
+                                isOnline = { networkMonitor.isCurrentlyOnline() }
+                            ),
+                            currentUserId = user.uid,
+                            networkMonitor = networkMonitor
                         )
                     }
                 }

@@ -4,7 +4,9 @@ import {
   deleteField,
   doc,
   getDoc,
+  getDocFromCache,
   getDocs,
+  getDocsFromCache,
   onSnapshot,
   query,
   serverTimestamp,
@@ -18,6 +20,59 @@ import {
   UNIT_ID,
   db,
 } from './firebase.js';
+
+const ONLINE_WRITE_TIMEOUT_MS = 4500;
+const OFFLINE_WRITE_GRACE_MS = 350;
+
+export function isWebOnline() {
+  return typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+}
+
+export function isSafePlateImageDataUrl(raw) {
+  if (typeof raw !== 'string') return false;
+  const clean = raw.trim();
+  if (clean.length < 29 || clean.length > 250000) return false;
+  return (
+    clean.startsWith('data:image/jpeg;base64,') ||
+    clean.startsWith('data:image/png;base64,') ||
+    clean.startsWith('data:image/webp;base64,')
+  );
+}
+
+async function withTimeout(promise, ms) {
+  let timerId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timerId = setTimeout(() => {
+          const err = new Error('OFFLINE_TIMEOUT');
+          err.code = 'deadline-exceeded';
+          reject(err);
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
+}
+
+async function awaitWriteWithOfflineGrace(promise) {
+  const graceMs = isWebOnline() ? ONLINE_WRITE_TIMEOUT_MS : OFFLINE_WRITE_GRACE_MS;
+  let queuedOffline = false;
+  let timerId;
+  await Promise.race([
+    promise,
+    new Promise((resolve) => {
+      timerId = setTimeout(() => {
+        queuedOffline = true;
+        resolve();
+      }, graceMs);
+    }),
+  ]);
+  if (timerId !== undefined) clearTimeout(timerId);
+  return { queuedOffline };
+}
 
 export function todayIsoDate() {
   const now = new Date();
@@ -87,16 +142,44 @@ export function getEntryHour(entry) {
 
 export async function ensureUserProfile(firebaseUser) {
   const userRef = doc(db, 'users', firebaseUser.uid);
-  const snap = await getDoc(userRef);
+  let snap = null;
+
+  if (!isWebOnline()) {
+    try {
+      snap = await getDocFromCache(userRef);
+    } catch {
+      snap = null;
+    }
+  } else {
+    try {
+      snap = await withTimeout(getDoc(userRef), 4000);
+    } catch (err) {
+      if (err?.code === 'unavailable' || err?.code === 'deadline-exceeded') {
+        try {
+          snap = await getDocFromCache(userRef);
+        } catch {
+          snap = null;
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
 
   const rawEmail = (firebaseUser.email || '').trim().toLowerCase();
   const safeEmail = rawEmail.length >= 3 ? rawEmail.slice(0, 200) : `${firebaseUser.uid}@usuario.local`;
   const rawName = (firebaseUser.displayName || '').trim();
   const safeName = (rawName || safeEmail.split('@')[0] || 'Usuario').slice(0, 100);
 
-  if (snap.exists()) {
+  if (snap && snap.exists()) {
     const data = snap.data();
     return { id: snap.id, ...data };
+  }
+
+  if (!isWebOnline()) {
+    throw new Error(
+      'Sin conexión a internet para registrar tu perfil por primera vez. Conéctate una vez para habilitar el modo offline en la guardia.'
+    );
   }
 
   const isBootAdmin =
@@ -121,6 +204,7 @@ export function subscribeUserProfile(uid, onData, onError) {
   const userRef = doc(db, 'users', uid);
   return onSnapshot(
     userRef,
+    { includeMetadataChanges: true },
     (snap) => {
       if (!snap.exists()) {
         onData(null);
@@ -142,8 +226,15 @@ export function subscribeEntries(unitId, dateIsoOrNull, onData, onError) {
 
   return onSnapshot(
     q,
+    { includeMetadataChanges: true },
     (snap) => {
-      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const pendingSyncIds = new Set();
+      const items = snap.docs.map((d) => {
+        if (d.metadata?.hasPendingWrites) {
+          pendingSyncIds.add(d.id);
+        }
+        return { id: d.id, ...d.data() };
+      });
       const statusOrder = { PENDIENTE: 0, INGRESO: 1, SALIDA: 2 };
       items.sort((a, b) => {
         const sA = statusOrder[a.status] ?? 9;
@@ -165,7 +256,11 @@ export function subscribeEntries(unitId, dateIsoOrNull, onData, onError) {
         }
         return getTimestampMillis(b.createdAt) - getTimestampMillis(a.createdAt);
       });
-      onData(items);
+      onData({
+        items,
+        fromCache: Boolean(snap.metadata?.fromCache),
+        pendingSyncIds,
+      });
     },
     onError
   );
@@ -173,7 +268,20 @@ export function subscribeEntries(unitId, dateIsoOrNull, onData, onError) {
 
 export async function fetchAllEntriesForUnit(unitId) {
   const q = query(collection(db, 'entries'), where('unitId', '==', unitId || UNIT_ID));
-  const snap = await getDocs(q);
+  let snap;
+  if (!isWebOnline()) {
+    snap = await getDocsFromCache(q);
+  } else {
+    try {
+      snap = await withTimeout(getDocs(q), 5000);
+    } catch (err) {
+      if (err?.code === 'unavailable' || err?.code === 'deadline-exceeded') {
+        snap = await getDocsFromCache(q);
+      } else {
+        throw err;
+      }
+    }
+  }
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
@@ -181,6 +289,7 @@ export function subscribeAllUsers(onData, onError) {
   const q = query(collection(db, 'users'));
   return onSnapshot(
     q,
+    { includeMetadataChanges: true },
     (snap) => {
       const roleOrder = { PENDING: 0, ADMIN: 1, OPERATOR: 2 };
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -202,8 +311,8 @@ const MAX_PLATE_DATA_URL_CHARS = 220000;
 function validatePlateAttachment(plateImageName, plateImageData) {
   const cleanData = (plateImageData || '').trim();
   if (!cleanData) return null;
-  if (!cleanData.startsWith('data:image/') || cleanData.length < 22 || cleanData.length > 250000) {
-    throw new Error('La imagen de la placa es inválida o supera el tamaño permitido.');
+  if (!isSafePlateImageDataUrl(cleanData)) {
+    throw new Error('La imagen de la placa debe ser JPEG, PNG o WEBP y no superar el tamaño permitido.');
   }
   const cleanName = (plateImageName || '').trim().slice(0, 160) || 'placa.jpg';
   return { fileName: cleanName, dataUrl: cleanData };
@@ -296,13 +405,14 @@ function buildSanitizedCreatePayload(draft, currentUser) {
 export async function createEntry(draft, currentUser) {
   const newRef = doc(collection(db, 'entries'));
   const payload = buildSanitizedCreatePayload(draft, currentUser);
-  await setDoc(newRef, payload);
-  return newRef.id;
+  const { queuedOffline } = await awaitWriteWithOfflineGrace(setDoc(newRef, payload));
+  return { id: newRef.id, queuedOffline };
 }
 
 export async function importEntriesBatch(drafts, currentUser) {
   const chunkSize = 450;
   let total = 0;
+  let anyQueuedOffline = false;
   for (let i = 0; i < drafts.length; i += chunkSize) {
     const chunk = drafts.slice(i, i + chunkSize);
     const batch = writeBatch(db);
@@ -315,9 +425,10 @@ export async function importEntriesBatch(drafts, currentUser) {
       batch.set(ref, payload);
       total += 1;
     }
-    await batch.commit();
+    const { queuedOffline } = await awaitWriteWithOfflineGrace(batch.commit());
+    if (queuedOffline) anyQueuedOffline = true;
   }
-  return total;
+  return { count: total, queuedOffline: anyQueuedOffline };
 }
 
 export async function updateEntry(entry, draft, currentUser) {
@@ -394,7 +505,7 @@ export async function updateEntry(entry, draft, currentUser) {
     }
   }
 
-  await updateDoc(doc(db, 'entries', entry.id), updates);
+  return awaitWriteWithOfflineGrace(updateDoc(doc(db, 'entries', entry.id), updates));
 }
 
 export async function markCheckInNow(entryId, currentUser, plateAttachment = null) {
@@ -413,7 +524,7 @@ export async function markCheckInNow(entryId, currentUser, plateAttachment = nul
       updates.plateImageData = validImage.dataUrl;
     }
   }
-  await updateDoc(doc(db, 'entries', entryId), updates);
+  return awaitWriteWithOfflineGrace(updateDoc(doc(db, 'entries', entryId), updates));
 }
 
 export async function attachPlateImage(entryId, plateAttachment) {
@@ -421,34 +532,41 @@ export async function attachPlateImage(entryId, plateAttachment) {
   if (!validImage) {
     throw new Error('Selecciona una imagen de placa válida.');
   }
-  await updateDoc(doc(db, 'entries', entryId), {
-    plateImageName: validImage.fileName,
-    plateImageData: validImage.dataUrl,
-    updatedAt: serverTimestamp(),
-  });
+  return awaitWriteWithOfflineGrace(
+    updateDoc(doc(db, 'entries', entryId), {
+      plateImageName: validImage.fileName,
+      plateImageData: validImage.dataUrl,
+      updatedAt: serverTimestamp(),
+    })
+  );
 }
 
 export async function markCheckOutNow(entryId, currentUser) {
   const safeCheckerName = ((currentUser.displayName || currentUser.email || 'Operador').trim()).slice(0, 120);
-  await updateDoc(doc(db, 'entries', entryId), {
-    status: 'SALIDA',
-    checkOutAt: serverTimestamp(),
-    checkOutByUid: currentUser.userId,
-    checkOutByName: safeCheckerName,
-    updatedAt: serverTimestamp(),
-  });
+  return awaitWriteWithOfflineGrace(
+    updateDoc(doc(db, 'entries', entryId), {
+      status: 'SALIDA',
+      checkOutAt: serverTimestamp(),
+      checkOutByUid: currentUser.userId,
+      checkOutByName: safeCheckerName,
+      updatedAt: serverTimestamp(),
+    })
+  );
 }
 
 export async function deleteEntry(entryId) {
-  await deleteDoc(doc(db, 'entries', entryId));
+  return awaitWriteWithOfflineGrace(deleteDoc(doc(db, 'entries', entryId)));
 }
 
 export async function updateUserRoleAndStatus(targetUserId, role, active) {
-  await updateDoc(doc(db, 'users', targetUserId), {
-    role,
-    active,
-    updatedAt: serverTimestamp(),
-  });
+  const safeActive = role === 'PENDING' ? false : Boolean(active);
+  return awaitWriteWithOfflineGrace(
+    updateDoc(doc(db, 'users', targetUserId), {
+      role,
+      active: safeActive,
+      updatedAt: serverTimestamp(),
+    })
+  );
 }
 
 export function humanizeFirebaseError(error) {

@@ -16,8 +16,9 @@ import com.example.R
 
 object NotificationHelper {
     const val CHANNEL_ID = "ingresos_cenop"
-    private const val CHANNEL_NAME = "Alertas de nuevos ingresos"
-    private const val CHANNEL_DESC = "Notificaciones en tiempo real cuando se registra o marca un nuevo ingreso."
+    private const val CHANNEL_NAME = "Alertas de control de acceso"
+    private const val CHANNEL_DESC =
+        "Notificaciones en tiempo real de nuevos ingresos y salidas de personal."
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -53,7 +54,8 @@ object NotificationHelper {
         context: Context,
         title: String,
         body: String,
-        entryId: String? = null
+        entryId: String? = null,
+        notificationTag: String? = null
     ) {
         ensureChannel(context)
         if (!hasNotificationPermission(context)) return
@@ -64,9 +66,10 @@ object NotificationHelper {
                 putExtra("entryId", entryId)
             }
         }
+        val keyForIds = notificationTag?.takeIf { it.isNotBlank() } ?: entryId ?: title
         val pendingIntent = PendingIntent.getActivity(
             context,
-            (entryId ?: title).hashCode(),
+            keyForIds.hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -83,7 +86,9 @@ object NotificationHelper {
             .setContentIntent(pendingIntent)
             .build()
 
-        val notificationId = if (!entryId.isNullOrBlank()) {
+        val notificationId = if (!notificationTag.isNullOrBlank()) {
+            notificationTag.hashCode()
+        } else if (!entryId.isNullOrBlank()) {
             entryId.hashCode()
         } else {
             System.currentTimeMillis().toInt()

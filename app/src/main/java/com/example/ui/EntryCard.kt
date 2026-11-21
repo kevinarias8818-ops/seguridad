@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Edit
@@ -68,6 +69,7 @@ fun EntryCard(
     entry: AccessEntry,
     isAdminActionsEnabled: Boolean,
     isBusy: Boolean,
+    isPendingSync: Boolean = false,
     onCheckInNow: (PlateImageAttachment?) -> Unit,
     onCheckOutNow: () -> Unit,
     onAttachPlateImage: (PlateImageAttachment) -> Unit,
@@ -218,6 +220,33 @@ fun EntryCard(
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }
+                    }
+                }
+            }
+
+            if (isPendingSync) {
+                Surface(
+                    color = Amber100,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.testTag("pending_sync_badge_${entry.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CloudQueue,
+                            contentDescription = null,
+                            tint = Amber900,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "Guardado offline · Pendiente de sincronizar",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Amber900
+                        )
                     }
                 }
             }

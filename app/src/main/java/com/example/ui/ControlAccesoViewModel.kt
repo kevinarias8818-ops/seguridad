@@ -15,6 +15,7 @@ import com.example.notifications.FcmTokenManager
 import com.example.util.DateTimeUtils
 import com.example.util.ExcelReportGenerator
 import com.example.util.ExcelReportResult
+import com.example.util.NetworkMonitor
 import com.example.util.PlateImageAttachment
 import com.example.util.ReportPeriod
 import com.example.util.TimeSlotFilter
@@ -46,10 +47,17 @@ sealed interface ExcelExportUiState {
     data class Error(val message: String) : ExcelExportUiState
 }
 
+data class SyncStatusState(
+    val isOnline: Boolean = true,
+    val isFromCache: Boolean = false,
+    val pendingSyncIds: Set<String> = emptySet()
+)
+
 data class EntryPushAlert(
     val entryId: String,
     val title: String,
-    val body: String
+    val body: String,
+    val status: String = ""
 )
 
 enum class EntryStatusFilter(val label: String) {
@@ -74,7 +82,8 @@ data class DashboardFilterState(
 @OptIn(ExperimentalCoroutinesApi::class)
 class ControlAccesoViewModel(
     private val repository: AccessRepository,
-    private val currentUserId: String
+    private val currentUserId: String,
+    private val networkMonitor: NetworkMonitor? = null
 ) : ViewModel() {
 
     private val _profileReady = MutableStateFlow(false)
@@ -91,6 +100,26 @@ class ControlAccesoViewModel(
 
     private val _isSubmitting = MutableStateFlow(false)
     val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
+
+    private val _isFromCache = MutableStateFlow(false)
+    private val _pendingSyncIds = MutableStateFlow<Set<String>>(emptySet())
+
+    val syncStatusState: StateFlow<SyncStatusState> =
+        combine(
+            networkMonitor?.isOnline ?: MutableStateFlow(true),
+            _isFromCache,
+            _pendingSyncIds
+        ) { online, fromCache, pendingIds ->
+            SyncStatusState(
+                isOnline = online,
+                isFromCache = fromCache,
+                pendingSyncIds = pendingIds
+            )
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = SyncStatusState(isOnline = networkMonitor?.isCurrentlyOnline() ?: true)
+        )
 
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents = _snackbarEvents.asSharedFlow()
@@ -151,6 +180,8 @@ class ControlAccesoViewModel(
                     val isAuthorized = profile.active &&
                         (profile.parsedRole == UserRole.ADMIN || profile.parsedRole == UserRole.OPERATOR)
                     if (!isAuthorized) {
+                        _isFromCache.value = false
+                        _pendingSyncIds.value = emptySet()
                         flowOf<UiState<List<AccessEntry>>>(UiState.Success(emptyList()))
                     } else {
                         val effectiveIsAdmin = profile.parsedRole == UserRole.ADMIN && !simOperator
@@ -159,17 +190,25 @@ class ControlAccesoViewModel(
                         } else {
                             DateTimeUtils.todayIso()
                         }
+                        hasLoadedInitialEntries = false
+                        knownEntryStatuses.clear()
                         repository.observeEntries(
                             currentUid = currentUserId,
                             unitId = profile.unitId,
                             entryDateFilter = dateFilter
                         )
-                            .onEach { list ->
-                                if (profile.parsedRole == UserRole.ADMIN && profile.active) {
-                                    detectNewEntryAlerts(list)
+                            .onEach { snap ->
+                                _isFromCache.value = snap.isFromCache
+                                _pendingSyncIds.value = snap.pendingSyncIds
+                                if (profile.active &&
+                                    (profile.parsedRole == UserRole.ADMIN || profile.parsedRole == UserRole.OPERATOR)
+                                ) {
+                                    detectNewEntryAlerts(snap.entries, profile.parsedRole)
                                 }
                             }
-                            .map<List<AccessEntry>, UiState<List<AccessEntry>>> { UiState.Success(it) }
+                            .map<com.example.data.EntriesSnapshot, UiState<List<AccessEntry>>> { snap ->
+                                UiState.Success(snap.entries)
+                            }
                             .catch { error ->
                                 val firestoreError = generateSequence(error) { it.cause }
                                     .filterIsInstance<FirebaseFirestoreException>()
@@ -273,13 +312,18 @@ class ControlAccesoViewModel(
                 plateImageData = plateAttachment?.dataUrl
             )
             _busyEntryId.value = null
-            result.onSuccess {
-                val msg = if (plateAttachment != null) {
+            result.onSuccess { outcome ->
+                val baseMsg = if (plateAttachment != null) {
                     "Ingreso y foto de placa registrados: ${entry.fullName}"
                 } else {
                     "Ingreso registrado: ${entry.fullName}"
                 }
-                _snackbarEvents.tryEmit(msg)
+                val finalMsg = if (outcome.queuedOffline) {
+                    "$baseMsg (guardado offline; sincronizará al volver el internet)"
+                } else {
+                    baseMsg
+                }
+                _snackbarEvents.tryEmit(finalMsg)
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo marcar el ingreso")
             }
@@ -295,8 +339,13 @@ class ControlAccesoViewModel(
                 plateImageData = attachment.dataUrl
             )
             _busyEntryId.value = null
-            result.onSuccess {
-                _snackbarEvents.tryEmit("Imagen de placa guardada: ${attachment.fileName}")
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Placa guardada offline (${attachment.fileName}). Se sincronizará al volver el internet."
+                } else {
+                    "Imagen de placa guardada: ${attachment.fileName}"
+                }
+                _snackbarEvents.tryEmit(msg)
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo guardar la imagen de la placa")
             }
@@ -367,8 +416,13 @@ class ControlAccesoViewModel(
                 actorName = profile.displayName
             )
             _busyEntryId.value = null
-            result.onSuccess {
-                _snackbarEvents.tryEmit("Salida registrada: ${entry.fullName}")
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Salida guardada offline (${entry.fullName}). Se sincronizará al volver el internet."
+                } else {
+                    "Salida registrada: ${entry.fullName}"
+                }
+                _snackbarEvents.tryEmit(msg)
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo marcar la salida")
             }
@@ -387,8 +441,13 @@ class ControlAccesoViewModel(
                     actorName = profile.displayName,
                     unitId = profile.unitId
                 )
-                result.onSuccess {
-                    _snackbarEvents.tryEmit("Ingreso creado: ${draft.fullName}")
+                result.onSuccess { outcome ->
+                    val msg = if (outcome.queuedOffline) {
+                        "Ingreso guardado offline (${draft.fullName}). Se sincronizará al reconectar."
+                    } else {
+                        "Ingreso creado: ${draft.fullName}"
+                    }
+                    _snackbarEvents.tryEmit(msg)
                     onDone()
                 }.onFailure { error ->
                     _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al guardar el ingreso")
@@ -411,8 +470,13 @@ class ControlAccesoViewModel(
                     actorName = profile.displayName,
                     unitId = profile.unitId
                 )
-                result.onSuccess { count ->
-                    _snackbarEvents.tryEmit("$count registros importados desde correo")
+                result.onSuccess { outcome ->
+                    val msg = if (outcome.queuedOffline) {
+                        "${outcome.count} registros guardados offline. Se sincronizarán al reconectar."
+                    } else {
+                        "${outcome.count} registros importados desde correo"
+                    }
+                    _snackbarEvents.tryEmit(msg)
                     onDone()
                 }.onFailure { error ->
                     _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al importar registros")
@@ -443,8 +507,13 @@ class ControlAccesoViewModel(
                     actorUid = currentUserId,
                     actorName = profile.displayName
                 )
-                result.onSuccess {
-                    _snackbarEvents.tryEmit("Registro actualizado: ${draft.fullName}")
+                result.onSuccess { outcome ->
+                    val msg = if (outcome.queuedOffline) {
+                        "Cambios guardados offline (${draft.fullName}). Se sincronizarán al reconectar."
+                    } else {
+                        "Registro actualizado: ${draft.fullName}"
+                    }
+                    _snackbarEvents.tryEmit(msg)
                     onDone()
                 }.onFailure { error ->
                     _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo actualizar el registro")
@@ -458,8 +527,13 @@ class ControlAccesoViewModel(
     fun deleteEntry(entry: AccessEntry) {
         viewModelScope.launch {
             val result = repository.deleteEntry(entry.id)
-            result.onSuccess {
-                _snackbarEvents.tryEmit("Registro eliminado")
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Eliminación en cola offline. Se aplicará al reconectar."
+                } else {
+                    "Registro eliminado"
+                }
+                _snackbarEvents.tryEmit(msg)
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo eliminar")
             }
@@ -469,28 +543,34 @@ class ControlAccesoViewModel(
     fun updateUserRoleAndStatus(targetUser: UserProfile, role: UserRole, active: Boolean) {
         viewModelScope.launch {
             val result = repository.updateUserRoleAndStatus(targetUser.userId, role, active)
-            result.onSuccess {
-                _snackbarEvents.tryEmit("Permisos actualizados para ${targetUser.displayName}")
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Permisos guardados offline para ${targetUser.displayName}. Se sincronizarán al reconectar."
+                } else {
+                    "Permisos actualizados para ${targetUser.displayName}"
+                }
+                _snackbarEvents.tryEmit(msg)
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "Error al actualizar permisos")
             }
         }
     }
 
-    fun syncAdminPushToken(context: Context, unitId: String) {
+    fun syncStaffPushToken(context: Context, unitId: String, role: UserRole) {
         viewModelScope.launch {
-            FcmTokenManager.registerAdminPushToken(
+            FcmTokenManager.registerStaffPushToken(
                 context = context.applicationContext,
                 repository = repository,
                 uid = currentUserId,
-                unitId = unitId
+                unitId = unitId,
+                role = role
             )
         }
     }
 
-    fun unregisterNonAdminPush(unitId: String) {
+    fun unregisterInactivePush(unitId: String) {
         viewModelScope.launch {
-            FcmTokenManager.unregisterNonAdminTopic(unitId)
+            FcmTokenManager.unregisterAllPushTopics(unitId)
         }
     }
 
@@ -502,7 +582,7 @@ class ControlAccesoViewModel(
         )
     }
 
-    private fun detectNewEntryAlerts(entries: List<AccessEntry>) {
+    private fun detectNewEntryAlerts(entries: List<AccessEntry>, role: UserRole) {
         if (!hasLoadedInitialEntries) {
             entries.forEach { knownEntryStatuses[it.id] = it.status }
             hasLoadedInitialEntries = true
@@ -529,40 +609,71 @@ class ControlAccesoViewModel(
             val createdBySomeoneElse = prevStatus == null &&
                 entry.createdByUid != currentUserId
 
-            if (becameCheckedIn) {
-                val actor = entry.checkInByName.orEmpty().ifBlank { "Operador" }
-                _entryAlerts.tryEmit(
-                    EntryPushAlert(
-                        entryId = entry.id,
-                        title = "Nuevo ingreso registrado: $personLabel",
-                        body = "${entry.destinationUnit} · Marcado por $actor"
-                    )
+            if (shouldEmitEntryAlert(
+                    role = role,
+                    isNewEntry = createdBySomeoneElse,
+                    becameCheckedIn = becameCheckedIn,
+                    becameCheckedOut = becameCheckedOut
                 )
-            } else if (becameCheckedOut) {
-                val actor = entry.checkOutByName.orEmpty().ifBlank { "Operador" }
-                _entryAlerts.tryEmit(
-                    EntryPushAlert(
-                        entryId = entry.id,
-                        title = "Salida registrada: $personLabel",
-                        body = "${entry.destinationUnit} · Marcado por $actor"
-                    )
-                )
-            } else if (createdBySomeoneElse) {
-                val stateLabel = entry.parsedStatus.label
-                _entryAlerts.tryEmit(
-                    EntryPushAlert(
-                        entryId = entry.id,
-                        title = "Nuevo registro en garita: $personLabel",
-                        body = "${entry.destinationUnit} · Estado: $stateLabel"
-                    )
-                )
+            ) {
+                when {
+                    becameCheckedIn -> {
+                        val actor = entry.checkInByName.orEmpty().ifBlank { "Operador" }
+                        _entryAlerts.tryEmit(
+                            EntryPushAlert(
+                                entryId = entry.id,
+                                title = "Nuevo ingreso registrado: $personLabel",
+                                body = "${entry.destinationUnit} · Marcado por $actor",
+                                status = entry.status
+                            )
+                        )
+                    }
+                    becameCheckedOut -> {
+                        val actor = entry.checkOutByName.orEmpty().ifBlank { "Operador" }
+                        _entryAlerts.tryEmit(
+                            EntryPushAlert(
+                                entryId = entry.id,
+                                title = "Salida registrada: $personLabel",
+                                body = "${entry.destinationUnit} · Marcado por $actor",
+                                status = entry.status
+                            )
+                        )
+                    }
+                    createdBySomeoneElse -> {
+                        val stateLabel = entry.parsedStatus.label
+                        _entryAlerts.tryEmit(
+                            EntryPushAlert(
+                                entryId = entry.id,
+                                title = "Nuevo ingreso autorizado: $personLabel",
+                                body = "${entry.destinationUnit} · Estado: $stateLabel",
+                                status = entry.status
+                            )
+                        )
+                    }
+                }
             }
             knownEntryStatuses[entry.id] = entry.status
         }
     }
 
+    override fun onCleared() {
+        networkMonitor?.dispose()
+        super.onCleared()
+    }
+
     companion object {
         private const val TAG = "ControlAccesoVM"
         private const val STOP_TIMEOUT_MILLIS = 5000L
+
+        fun shouldEmitEntryAlert(
+            role: UserRole,
+            isNewEntry: Boolean,
+            becameCheckedIn: Boolean,
+            becameCheckedOut: Boolean
+        ): Boolean = when (role) {
+            UserRole.ADMIN -> isNewEntry || becameCheckedIn || becameCheckedOut
+            UserRole.OPERATOR -> isNewEntry || becameCheckedIn
+            UserRole.PENDING -> false
+        }
     }
 }

@@ -1006,3 +1006,37 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Offline & Sync Status */
+.sync-banner {
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 0.86rem;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--border);
+}
+
+.sync-banner.is-offline {
+  background: var(--amber-soft);
+  border-color: var(--amber-border);
+  color: #fef3c7;
+}
+
+.sync-banner.is-syncing {
+  background: var(--primary-soft);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #e0f2fe;
+}
+
+.pill-offline-sync {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.entry-card.has-pending-sync {
+  border-color: var(--amber-border);
+}

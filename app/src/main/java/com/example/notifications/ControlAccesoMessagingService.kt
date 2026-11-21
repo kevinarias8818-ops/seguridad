@@ -44,12 +44,19 @@ class ControlAccesoMessagingService : FirebaseMessagingService() {
             .ifBlank { "Se registró una actualización en control de ingresos." }
         val body = message.notification?.body ?: data["body"] ?: fallbackBody
         val entryId = data["entryId"]
+        val status = data["status"] ?: data["eventType"]
+        val tag = if (!entryId.isNullOrBlank() && !status.isNullOrBlank()) {
+            "${entryId}_$status"
+        } else {
+            entryId
+        }
 
         NotificationHelper.showEntryAlert(
             context = applicationContext,
             title = title,
             body = body,
-            entryId = entryId
+            entryId = entryId,
+            notificationTag = tag
         )
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "control-acceso-functions",
-  "description": "Cloud Functions for sending FCM push notifications to Admins on new access entries",
+  "description": "Cloud Functions for sending FCM push notifications to Admins (entries & exits) and Operators (new entries)",
   "main": "index.js",
   "engines": {
     "node": "20"

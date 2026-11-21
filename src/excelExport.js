@@ -1,4 +1,9 @@
-import { formatDateTimeShort, getTimestampMillis, todayIsoDate } from './accessService.js';
+import {
+  formatDateTimeShort,
+  getTimestampMillis,
+  isSafePlateImageDataUrl,
+  todayIsoDate,
+} from './accessService.js';
 
 export const REPORT_PERIODS = {
   LAST_24H: {
@@ -118,13 +123,15 @@ function inlineCell(cellRef, text, styleIdx) {
 }
 
 function decodeDataUrlBytes(dataUrl) {
-  if (!dataUrl || typeof dataUrl !== 'string') return null;
+  if (!isSafePlateImageDataUrl(dataUrl)) return null;
   const trimmed = dataUrl.trim();
-  if (!trimmed.startsWith('data:image/')) return null;
   const commaIdx = trimmed.indexOf(',');
   if (commaIdx <= 0) return null;
-  const header = trimmed.slice(0, commaIdx).toLowerCase();
-  const ext = header.includes('png') ? 'png' : 'jpg';
+  const ext = trimmed.startsWith('data:image/png;base64,')
+    ? 'png'
+    : trimmed.startsWith('data:image/webp;base64,')
+    ? 'webp'
+    : 'jpg';
   try {
     const bin = atob(trimmed.slice(commaIdx + 1));
     if (!bin.length) return null;
@@ -333,6 +340,9 @@ function buildContentTypesXml(hasDrawings, exts) {
   }
   if (exts.has('png')) {
     extXml += '  <Default Extension="png" ContentType="image/png"/>\n';
+  }
+  if (exts.has('webp')) {
+    extXml += '  <Default Extension="webp" ContentType="image/webp"/>\n';
   }
   const drawingOverride = hasDrawings
     ? '  <Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>\n'

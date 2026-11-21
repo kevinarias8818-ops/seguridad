@@ -62,6 +62,7 @@ service cloud.firestore {
              data.role in ['PENDING', 'ADMIN', 'OPERATOR'] &&
              data.unitId is string && data.unitId.size() >= 2 && data.unitId.size() <= 64 &&
              data.active is bool &&
+             (data.role != 'PENDING' || data.active == false) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -82,7 +83,16 @@ service cloud.firestore {
              data.documentNumber is string && data.documentNumber.size() >= 1 && data.documentNumber.size() <= 40 &&
              data.plate is string && data.plate.size() <= 20 &&
              (!('plateImageName' in data) || (data.plateImageName is string && data.plateImageName.size() <= 160)) &&
-             (!('plateImageData' in data) || (data.plateImageData is string && data.plateImageData.size() >= 22 && data.plateImageData.size() <= 250000 && data.plateImageData[0:11] == 'data:image/')) &&
+             (!('plateImageData' in data) || (
+               data.plateImageData is string &&
+               data.plateImageData.size() >= 29 &&
+               data.plateImageData.size() <= 250000 &&
+               (
+                 data.plateImageData[0:23] == 'data:image/jpeg;base64,' ||
+                 data.plateImageData[0:22] == 'data:image/png;base64,' ||
+                 data.plateImageData[0:23] == 'data:image/webp;base64,'
+               )
+             )) &&
              data.destinationUnit is string && data.destinationUnit.size() >= 1 && data.destinationUnit.size() <= 80 &&
              (!('reason' in data) || (data.reason is string && data.reason.size() <= 160)) &&
              data.visitorType in ['PERSONAL', 'VISITANTE', 'PROVEEDOR', 'CONTRATISTA'] &&
@@ -157,17 +167,17 @@ service cloud.firestore {
         allow create: if isSignedIn() &&
                          isValidId(tokenId) &&
                          request.auth.uid == userId &&
-                         isAdmin() &&
+                         isActiveStaff() &&
                          isValidFcmToken(incoming()) &&
                          incoming().keys().hasAll(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
                          incoming().keys().hasOnly(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
                          incoming().userId == request.auth.uid &&
-                         incoming().unitId == 'UNIDAD_PRINCIPAL';
+                         incoming().unitId == userUnitId();
 
         allow update: if isSignedIn() &&
                          isValidId(tokenId) &&
                          request.auth.uid == userId &&
-                         isAdmin() &&
+                         isActiveStaff() &&
                          isValidFcmToken(incoming()) &&
                          incoming().keys().hasAll(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&
                          incoming().keys().hasOnly(['userId', 'token', 'platform', 'unitId', 'updatedAt']) &&

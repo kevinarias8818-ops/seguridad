@@ -1,7 +1,6 @@
 package com.example.data
 
 import android.content.Context
-import com.example.R
 import com.example.model.AccessEntry
 import com.example.model.BOOTSTRAPPED_ADMIN_EMAIL
 import com.example.model.DEFAULT_UNIT_ID
@@ -9,6 +8,7 @@ import com.example.model.EntryDraft
 import com.example.model.EntryStatus
 import com.example.model.UserProfile
 import com.example.model.UserRole
+import com.google.android.gms.tasks.Task
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -17,6 +17,8 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.MetadataChanges
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.snapshots
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
@@ -26,15 +28,32 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
+
+data class EntriesSnapshot(
+    val entries: List<AccessEntry>,
+    val isFromCache: Boolean,
+    val pendingSyncIds: Set<String>
+)
+
+data class WriteOutcome(
+    val queuedOffline: Boolean = false
+)
+
+data class BatchImportOutcome(
+    val count: Int,
+    val queuedOffline: Boolean = false
+)
 
 class AccessRepository(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val auth: FirebaseAuth = Firebase.auth,
+    private val isOnline: () -> Boolean = { true }
 ) {
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        db = FirestoreDatabaseProvider.getInstance(context),
+        auth = Firebase.auth,
+        isOnline = { true }
     )
 
     private fun requireUserId(): String {
@@ -42,13 +61,37 @@ class AccessRepository(
             ?: throw IllegalStateException("Debe iniciar sesión con Google para continuar.")
     }
 
+    private suspend fun Task<Void>.awaitWriteQueued(): WriteOutcome {
+        val graceMillis = if (isOnline()) ONLINE_WRITE_TIMEOUT_MS else OFFLINE_WRITE_GRACE_MS
+        val completed = withTimeoutOrNull(graceMillis) {
+            this@awaitWriteQueued.await()
+            true
+        } ?: false
+        return WriteOutcome(queuedOffline = !completed)
+    }
+
     suspend fun ensureUserProfile(firebaseUser: FirebaseUser): Result<UserProfile> {
         val uid = firebaseUser.uid
         val docPath = "users/$uid"
         return try {
             val docRef = db.collection("users").document(uid)
-            val snapshot = docRef.get().await()
-            if (snapshot.exists()) {
+
+            val snapshot = if (!isOnline()) {
+                runCatching { docRef.get(Source.CACHE).await() }.getOrNull()
+            } else {
+                try {
+                    withTimeoutOrNull(4_000L) { docRef.get().await() }
+                        ?: runCatching { docRef.get(Source.CACHE).await() }.getOrNull()
+                } catch (e: FirebaseFirestoreException) {
+                    if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE) {
+                        runCatching { docRef.get(Source.CACHE).await() }.getOrNull()
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
+            if (snapshot != null && snapshot.exists()) {
                 val existing = snapshot.toObject(
                     UserProfile::class.java,
                     DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
@@ -56,6 +99,14 @@ class AccessRepository(
                 if (existing != null) {
                     return Result.success(existing)
                 }
+            }
+
+            if (!isOnline()) {
+                return Result.failure(
+                    IllegalStateException(
+                        "Sin conexión a internet para registrar tu perfil por primera vez. Conéctate una vez para habilitar el modo offline en la guardia."
+                    )
+                )
             }
 
             val email = firebaseUser.email?.trim()?.take(200).orEmpty().ifBlank { "usuario@unidad.local" }
@@ -104,7 +155,7 @@ class AccessRepository(
         val path = "users/$uid"
         emitAll(
             db.collection("users").document(uid)
-                .snapshots()
+                .snapshots(MetadataChanges.INCLUDE)
                 .map { snapshot ->
                     snapshot.toObject(
                         UserProfile::class.java,
@@ -130,7 +181,7 @@ class AccessRepository(
         val path = "users"
         emitAll(
             db.collection("users")
-                .snapshots()
+                .snapshots(MetadataChanges.INCLUDE)
                 .map { snapshot ->
                     snapshot.toObjects(
                         UserProfile::class.java,
@@ -159,20 +210,21 @@ class AccessRepository(
         targetUserId: String,
         role: UserRole,
         active: Boolean
-    ): Result<Unit> {
+    ): Result<WriteOutcome> {
         val docPath = "users/$targetUserId"
         return try {
             requireUserId()
             require(targetUserId.isNotBlank()) { "ID de usuario vacío" }
-            db.collection("users").document(targetUserId)
+            val safeActive = if (role == UserRole.PENDING) false else active
+            val outcome = db.collection("users").document(targetUserId)
                 .update(
                     mapOf(
                         "role" to role.name,
-                        "active" to active,
+                        "active" to safeActive,
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
-                ).await()
-            Result.success(Unit)
+                ).awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -253,7 +305,7 @@ class AccessRepository(
         currentUid: String,
         unitId: String,
         entryDateFilter: String?
-    ): Flow<List<AccessEntry>> = flow {
+    ): Flow<EntriesSnapshot> = flow {
         require(currentUid.isNotBlank())
         val path = "entries"
         val baseQuery = db.collection("entries").whereEqualTo("unitId", unitId)
@@ -263,15 +315,26 @@ class AccessRepository(
             baseQuery
         }
         emitAll(
-            query.snapshots()
+            query.snapshots(MetadataChanges.INCLUDE)
                 .map { snapshot ->
-                    snapshot.toObjects(
-                        AccessEntry::class.java,
-                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    ).sortedWith(
+                    val list = snapshot.documents.mapNotNull { doc ->
+                        doc.toObject(
+                            AccessEntry::class.java,
+                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                        )
+                    }.sortedWith(
                         compareBy<AccessEntry> { statusSortPriority(it.status) }
                             .thenByDescending { it.entryDate }
                             .thenByDescending { it.createdAt?.seconds ?: 0L }
+                    )
+                    val pendingIds = snapshot.documents
+                        .filter { it.metadata.hasPendingWrites() }
+                        .map { it.id }
+                        .toSet()
+                    EntriesSnapshot(
+                        entries = list,
+                        isFromCache = snapshot.metadata.isFromCache,
+                        pendingSyncIds = pendingIds
                     )
                 }
                 .catch { error ->
@@ -293,10 +356,21 @@ class AccessRepository(
         return try {
             requireUserId()
             val safeUnitId = unitId.trim().ifBlank { DEFAULT_UNIT_ID }
-            val snapshot = db.collection("entries")
-                .whereEqualTo("unitId", safeUnitId)
-                .get()
-                .await()
+            val query = db.collection("entries").whereEqualTo("unitId", safeUnitId)
+            val snapshot = if (!isOnline()) {
+                query.get(Source.CACHE).await()
+            } else {
+                try {
+                    withTimeoutOrNull(5_000L) { query.get().await() }
+                        ?: query.get(Source.CACHE).await()
+                } catch (e: FirebaseFirestoreException) {
+                    if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE) {
+                        query.get(Source.CACHE).await()
+                    } else {
+                        throw e
+                    }
+                }
+            }
             val list = snapshot.toObjects(
                 AccessEntry::class.java,
                 DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
@@ -315,7 +389,7 @@ class AccessRepository(
         actorUid: String,
         actorName: String,
         unitId: String
-    ): Result<Unit> {
+    ): Result<WriteOutcome> {
         var docPath = "entries"
         return try {
             val uid = requireUserId()
@@ -323,8 +397,8 @@ class AccessRepository(
             val payload = buildCreatePayload(draft, uid, actorName, unitId)
             val docRef = db.collection("entries").document()
             docPath = docRef.path
-            docRef.set(payload).await()
-            Result.success(Unit)
+            val outcome = docRef.set(payload).awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -338,7 +412,7 @@ class AccessRepository(
         actorUid: String,
         actorName: String,
         unitId: String
-    ): Result<Int> {
+    ): Result<BatchImportOutcome> {
         val path = "entries"
         return try {
             val uid = requireUserId()
@@ -347,6 +421,7 @@ class AccessRepository(
 
             val chunks = drafts.chunked(400)
             var totalInserted = 0
+            var anyQueuedOffline = false
             for (chunk in chunks) {
                 val batch = db.batch()
                 for (draft in chunk) {
@@ -355,9 +430,10 @@ class AccessRepository(
                     batch.set(docRef, payload)
                     totalInserted++
                 }
-                batch.commit().await()
+                val outcome = batch.commit().awaitWriteQueued()
+                if (outcome.queuedOffline) anyQueuedOffline = true
             }
-            Result.success(totalInserted)
+            Result.success(BatchImportOutcome(count = totalInserted, queuedOffline = anyQueuedOffline))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -373,7 +449,7 @@ class AccessRepository(
         existingEntry: AccessEntry,
         actorUid: String,
         actorName: String
-    ): Result<Unit> {
+    ): Result<WriteOutcome> {
         val docPath = "entries/$entryId"
         return try {
             val uid = requireUserId()
@@ -444,8 +520,8 @@ class AccessRepository(
                 }
             }
 
-            db.collection("entries").document(entryId).update(updates).await()
-            Result.success(Unit)
+            val outcome = db.collection("entries").document(entryId).update(updates).awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -460,7 +536,7 @@ class AccessRepository(
         actorName: String,
         plateImageName: String? = null,
         plateImageData: String? = null
-    ): Result<Unit> {
+    ): Result<WriteOutcome> {
         val docPath = "entries/$entryId"
         return try {
             val uid = requireUserId()
@@ -477,16 +553,16 @@ class AccessRepository(
             )
             if (!plateImageData.isNullOrBlank()) {
                 val safeData = plateImageData.trim()
-                require(safeData.startsWith("data:image/") && safeData.length in 22..250_000) {
-                    "La imagen de la placa excede el tamaño permitido."
+                require(isSafePlateImageDataUrl(safeData)) {
+                    "La imagen de la placa debe ser JPEG, PNG o WEBP y no superar el tamaño permitido."
                 }
                 updates["plateImageName"] = plateImageName?.trim()?.take(160)?.ifBlank { "placa_ingreso.jpg" }
                     ?: "placa_ingreso.jpg"
                 updates["plateImageData"] = safeData
             }
 
-            db.collection("entries").document(entryId).update(updates).await()
-            Result.success(Unit)
+            val outcome = db.collection("entries").document(entryId).update(updates).awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -499,25 +575,25 @@ class AccessRepository(
         entryId: String,
         plateImageName: String,
         plateImageData: String
-    ): Result<Unit> {
+    ): Result<WriteOutcome> {
         val docPath = "entries/$entryId"
         return try {
             requireUserId()
             require(entryId.isNotBlank()) { "ID de registro inválido." }
             val safeData = plateImageData.trim()
-            require(safeData.startsWith("data:image/") && safeData.length in 22..250_000) {
-                "La imagen de la placa excede el tamaño permitido."
+            require(isSafePlateImageDataUrl(safeData)) {
+                "La imagen de la placa debe ser JPEG, PNG o WEBP y no superar el tamaño permitido."
             }
             val safeName = plateImageName.trim().take(160).ifBlank { "placa.jpg" }
 
-            db.collection("entries").document(entryId).update(
+            val outcome = db.collection("entries").document(entryId).update(
                 mapOf(
                     "plateImageName" to safeName,
                     "plateImageData" to safeData,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
-            Result.success(Unit)
+            ).awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -530,7 +606,7 @@ class AccessRepository(
         entryId: String,
         actorUid: String,
         actorName: String
-    ): Result<Unit> {
+    ): Result<WriteOutcome> {
         val docPath = "entries/$entryId"
         return try {
             val uid = requireUserId()
@@ -538,7 +614,7 @@ class AccessRepository(
             require(entryId.isNotBlank()) { "ID de registro inválido." }
             val safeActorName = actorName.trim().take(120).ifBlank { "Operador" }
 
-            db.collection("entries").document(entryId).update(
+            val outcome = db.collection("entries").document(entryId).update(
                 mapOf(
                     "status" to EntryStatus.SALIDA.name,
                     "checkOutAt" to FieldValue.serverTimestamp(),
@@ -546,8 +622,8 @@ class AccessRepository(
                     "checkOutByName" to safeActorName,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
-            Result.success(Unit)
+            ).awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -563,13 +639,13 @@ class AccessRepository(
         else -> 3
     }
 
-    suspend fun deleteEntry(entryId: String): Result<Unit> {
+    suspend fun deleteEntry(entryId: String): Result<WriteOutcome> {
         val docPath = "entries/$entryId"
         return try {
             requireUserId()
             require(entryId.isNotBlank()) { "ID de registro inválido." }
-            db.collection("entries").document(entryId).delete().await()
-            Result.success(Unit)
+            val outcome = db.collection("entries").document(entryId).delete().awaitWriteQueued()
+            Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -597,8 +673,8 @@ class AccessRepository(
         }
         val cleanImageData = draft.plateImageData.trim()
         if (cleanImageData.isNotEmpty()) {
-            require(cleanImageData.startsWith("data:image/") && cleanImageData.length in 22..250_000) {
-                "La imagen de la placa es inválida o supera el tamaño permitido."
+            require(isSafePlateImageDataUrl(cleanImageData)) {
+                "La imagen de la placa debe ser JPEG, PNG o WEBP y no superar el tamaño permitido."
             }
         }
         return draft.copy(
@@ -653,5 +729,18 @@ class AccessRepository(
             payload["plateImageData"] = validated.plateImageData
         }
         return payload
+    }
+
+    companion object {
+        private const val ONLINE_WRITE_TIMEOUT_MS = 4_500L
+        private const val OFFLINE_WRITE_GRACE_MS = 350L
+
+        fun isSafePlateImageDataUrl(raw: String?): Boolean {
+            val clean = raw?.trim() ?: return false
+            if (clean.length !in 29..250_000) return false
+            return clean.startsWith("data:image/jpeg;base64,") ||
+                clean.startsWith("data:image/png;base64,") ||
+                clean.startsWith("data:image/webp;base64,")
+        }
     }
 }

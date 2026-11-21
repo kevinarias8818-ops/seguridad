@@ -213,11 +213,14 @@ object ExcelReportGenerator {
     private fun decodePlateImageBytes(dataUrl: String?): Pair<String, ByteArray>? {
         if (dataUrl.isNullOrBlank()) return null
         val trimmed = dataUrl.trim()
-        if (!trimmed.startsWith("data:image/")) return null
+        val ext = when {
+            trimmed.startsWith("data:image/jpeg;base64,") -> "jpg"
+            trimmed.startsWith("data:image/png;base64,") -> "png"
+            trimmed.startsWith("data:image/webp;base64,") -> "webp"
+            else -> return null
+        }
         val commaIdx = trimmed.indexOf(',')
         if (commaIdx <= 0) return null
-        val header = trimmed.substring(0, commaIdx).lowercase()
-        val ext = if (header.contains("png")) "png" else "jpg"
         val base64Part = trimmed.substring(commaIdx + 1)
         return runCatching {
             val raw = Base64.decode(base64Part, Base64.DEFAULT)
@@ -413,6 +416,9 @@ object ExcelReportGenerator {
             }
             if ("png" in extensions) {
                 append("""  <Default Extension="png" ContentType="image/png"/>""").append('\n')
+            }
+            if ("webp" in extensions) {
+                append("""  <Default Extension="webp" ContentType="image/webp"/>""").append('\n')
             }
         }
         val drawingOverride = if (hasDrawings) {

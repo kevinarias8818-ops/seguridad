@@ -1,6 +1,11 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 
 // Configuración directa de Firebase Web para cliente (sin variables de entorno ni lectura de servidor).
 // IMPORTANTE: Registra una app Web en Firebase Console (proyecto gen-lang-client-0597164698)
@@ -26,5 +31,20 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Conectar explícitamente a la base de datos nombrada (no usar getFirestore(app) sin segundo parámetro)
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
+// Conectar explícitamente a la base de datos nombrada con persistencia offline en IndexedDB
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(
+    app,
+    {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    },
+    FIRESTORE_DATABASE_ID
+  );
+} catch {
+  firestoreInstance = getFirestore(app, FIRESTORE_DATABASE_ID);
+}
+
+export const db = firestoreInstance;

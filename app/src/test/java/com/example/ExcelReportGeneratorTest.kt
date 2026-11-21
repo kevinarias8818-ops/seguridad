@@ -158,4 +158,66 @@ class ExcelReportGeneratorTest {
         assertTrue(sheet2Xml.contains("Últimas 24 horas"))
         assertTrue(sheet2Xml.contains("Kevin Arias"))
     }
+
+    @Test
+    fun `isSafePlateImageDataUrl accepts raster images and rejects svg or malformed payloads`() {
+        assertTrue(com.example.data.AccessRepository.isSafePlateImageDataUrl(sampleJpegBase64))
+        assertTrue(
+            com.example.data.AccessRepository.isSafePlateImageDataUrl(
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            )
+        )
+        assertTrue(
+            com.example.data.AccessRepository.isSafePlateImageDataUrl(
+                "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA="
+            )
+        )
+
+        assertFalse(
+            com.example.data.AccessRepository.isSafePlateImageDataUrl(
+                "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+PC9zdmc+"
+            )
+        )
+        assertFalse(
+            com.example.data.AccessRepository.isSafePlateImageDataUrl(
+                "javascript:alert(1)//data:image/jpeg;base64,AAAA"
+            )
+        )
+        assertFalse(com.example.data.AccessRepository.isSafePlateImageDataUrl("data:image/jpeg;base64,"))
+    }
+
+    @Test
+    fun `generateWorkbookBytes ignores svg data urls so untrusted xml cannot embed`() {
+        val nowMs = System.currentTimeMillis()
+        val entry = AccessEntry(
+            id = "e_svg",
+            entryDate = DateTimeUtils.todayIso(),
+            fullName = "Prueba Seguridad",
+            documentNumber = "9999",
+            destinationUnit = "Guardia",
+            plateImageName = "payload.svg",
+            plateImageData = "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+PC9zdmc+",
+            status = EntryStatus.PENDIENTE.name,
+            createdAt = Timestamp(Date(nowMs))
+        )
+
+        val bytes = ExcelReportGenerator.generateWorkbookBytes(
+            entries = listOf(entry),
+            period = ReportPeriod.LAST_24_HOURS,
+            generatedBy = "Admin",
+            unitId = "UNIDAD_PRINCIPAL",
+            nowMillis = nowMs
+        )
+
+        val entriesMap = mutableMapOf<String, ByteArray>()
+        ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
+            while (true) {
+                val zipEntry = zis.nextEntry ?: break
+                entriesMap[zipEntry.name] = zis.readBytes()
+            }
+        }
+
+        assertFalse(entriesMap.containsKey("xl/media/plate_1.jpg"))
+        assertFalse(entriesMap.containsKey("xl/drawings/drawing1.xml"))
+    }
 }

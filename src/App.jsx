@@ -11,6 +11,7 @@ import {
   Camera,
   CheckCircle2,
   Clock,
+  CloudOff,
   Download,
   Edit3,
   Eye,
@@ -27,6 +28,7 @@ import {
   Trash2,
   UserCheck,
   Users,
+  WifiOff,
   X,
   ZoomIn,
 } from 'lucide-react';
@@ -43,7 +45,9 @@ import {
   getEntryHour,
   humanizeFirebaseError,
   importEntriesBatch,
+  isSafePlateImageDataUrl,
   isValidIsoDate,
+  isWebOnline,
   markCheckInNow,
   markCheckOutNow,
   subscribeAllUsers,
@@ -96,8 +100,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('INGRESOS');
   const [simulateOperator, setSimulateOperator] = useState(false);
 
+  const [isOnline, setIsOnline] = useState(() => isWebOnline());
   const [entries, setEntries] = useState([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
+  const [isFromCache, setIsFromCache] = useState(false);
+  const [pendingSyncIds, setPendingSyncIds] = useState(() => new Set());
   const [users, setUsers] = useState([]);
 
   // Filters
@@ -120,6 +127,19 @@ export default function App() {
       setToastMsg((prev) => (prev === msg ? '' : prev));
     }, 3200);
   }
+
+  // Monitoreo de conectividad en tiempo real para Modo Offline en la guardia
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // 0. Procesar resultado de redirección de Google Sign-In al volver a la app
   useEffect(() => {
@@ -216,6 +236,8 @@ export default function App() {
   useEffect(() => {
     if (!isStaffActive) {
       setEntries([]);
+      setIsFromCache(false);
+      setPendingSyncIds(new Set());
       return undefined;
     }
     setEntriesLoading(true);
@@ -223,8 +245,10 @@ export default function App() {
     const unsub = subscribeEntries(
       profile.unitId || UNIT_ID,
       scopeDate,
-      (list) => {
-        setEntries(list);
+      (snapshot) => {
+        setEntries(snapshot.items);
+        setIsFromCache(snapshot.fromCache);
+        setPendingSyncIds(snapshot.pendingSyncIds);
         setEntriesLoading(false);
       },
       (err) => {
@@ -288,14 +312,24 @@ export default function App() {
     setErrorMsg('');
     try {
       const staged = stagedPlateByEntry[entry.id] || null;
-      await markCheckInNow(entry.id, profile, staged);
+      const res = await markCheckInNow(entry.id, profile, staged);
       setStagedPlateByEntry((prev) => {
         if (!prev[entry.id]) return prev;
         const next = { ...prev };
         delete next[entry.id];
         return next;
       });
-      showToast(staged ? `Ingreso y placa guardados: ${entry.fullName}` : `Ingreso marcado: ${entry.fullName}`);
+      if (res?.queuedOffline) {
+        showToast(
+          `Ingreso guardado offline: ${entry.fullName}. Se sincronizará automáticamente al volver el internet.`
+        );
+      } else {
+        showToast(
+          staged
+            ? `Ingreso y placa guardados: ${entry.fullName}`
+            : `Ingreso marcado: ${entry.fullName}`
+        );
+      }
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
     } finally {
@@ -307,8 +341,12 @@ export default function App() {
     setBusyId(entry.id);
     setErrorMsg('');
     try {
-      await attachPlateImage(entry.id, attachment);
-      showToast(`Imagen de placa guardada: ${attachment.fileName}`);
+      const res = await attachPlateImage(entry.id, attachment);
+      showToast(
+        res?.queuedOffline
+          ? `Placa guardada offline: ${attachment.fileName}. Se subirá al reconectar.`
+          : `Imagen de placa guardada: ${attachment.fileName}`
+      );
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
     } finally {
@@ -321,8 +359,12 @@ export default function App() {
     setBusyId(entry.id);
     setErrorMsg('');
     try {
-      await markCheckOutNow(entry.id, profile);
-      showToast(`Salida marcada: ${entry.fullName}`);
+      const res = await markCheckOutNow(entry.id, profile);
+      showToast(
+        res?.queuedOffline
+          ? `Salida guardada offline: ${entry.fullName}. Se sincronizará al volver el internet.`
+          : `Salida marcada: ${entry.fullName}`
+      );
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
     } finally {
@@ -335,8 +377,12 @@ export default function App() {
     setBusyId(entry.id);
     setErrorMsg('');
     try {
-      await deleteEntry(entry.id);
-      showToast('Registro eliminado');
+      const res = await deleteEntry(entry.id);
+      showToast(
+        res?.queuedOffline
+          ? 'Eliminación en cola offline. Se aplicará al volver el internet.'
+          : 'Registro eliminado'
+      );
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
     } finally {
@@ -348,8 +394,12 @@ export default function App() {
     setBusyId(targetUser.userId);
     setErrorMsg('');
     try {
-      await updateUserRoleAndStatus(targetUser.userId, role, active);
-      showToast(`Permisos actualizados para ${targetUser.displayName}`);
+      const res = await updateUserRoleAndStatus(targetUser.userId, role, active);
+      showToast(
+        res?.queuedOffline
+          ? `Cambio de rol para ${targetUser.displayName} en cola offline.`
+          : `Permisos actualizados para ${targetUser.displayName}`
+      );
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
     } finally {
@@ -589,11 +639,18 @@ export default function App() {
               <h1 className="brand-title">Control Acceso</h1>
               <p className="brand-sub">
                 {profile.displayName} · Unidad {profile.unitId || UNIT_ID}
+                {!isOnline ? ' · Sin internet (Modo Offline)' : ''}
               </p>
             </div>
           </div>
 
           <div className="topbar-actions">
+            {!isOnline && (
+              <span className="pill pill-offline-sync">
+                <WifiOff size={13} />
+                OFFLINE
+              </span>
+            )}
             <span className={`pill ${effectiveIsAdmin ? 'pill-admin' : 'pill-operator'}`}>
               {effectiveIsAdmin ? 'ADMIN' : simulateOperator ? 'VISTA OPERADOR' : 'OPERADOR'}
             </span>
@@ -628,6 +685,35 @@ export default function App() {
       </header>
 
       <main className="main-content">
+        {(!isOnline || isFromCache || pendingSyncIds.size > 0) && (
+          <div
+            className={`sync-banner ${!isOnline || isFromCache ? 'is-offline' : 'is-syncing'}`}
+            role="status"
+          >
+            {!isOnline || isFromCache ? (
+              <CloudOff size={18} style={{ flexShrink: 0, marginTop: 2 }} />
+            ) : (
+              <RefreshCw size={18} style={{ flexShrink: 0, marginTop: 2 }} />
+            )}
+            <div>
+              <strong>
+                {!isOnline
+                  ? 'Modo Offline activo (Sin internet)'
+                  : isFromCache
+                  ? 'Mostrando datos guardados localmente'
+                  : `Sincronizando ${pendingSyncIds.size} cambio(s) con Firebase`}
+              </strong>
+              <div style={{ marginTop: 2, fontSize: '0.82rem', opacity: 0.92 }}>
+                {!isOnline || isFromCache
+                  ? pendingSyncIds.size > 0
+                    ? `Puedes seguir registrando ingresos y salidas. Tienes ${pendingSyncIds.size} registro(s) pendientes que se subirán automáticamente al volver la conexión.`
+                    : 'Los registros en caché local siguen operativos. Todo cambio que realices se guardará en el dispositivo y se sincronizará al volver el internet.'
+                  : 'Subiendo los cambios realizados sin conexión al servidor en la nube.'}
+              </div>
+            </div>
+          </div>
+        )}
+
         {errorMsg && (
           <div className="error-banner" role="alert">
             <AlertCircle size={18} style={{ flexShrink: 0, marginTop: 2 }} />
@@ -810,12 +896,13 @@ export default function App() {
                   const isExited = entry.status === 'SALIDA';
                   const hasEntered = isEntered || isExited;
                   const isBusy = busyId === entry.id;
+                  const isPendingSync = pendingSyncIds.has(entry.id);
                   return (
                     <article
                       key={entry.id}
                       className={`entry-card ${
                         isPending ? 'is-pending' : isExited ? 'is-exited' : 'is-entered'
-                      }`}
+                      } ${isPendingSync ? 'has-pending-sync' : ''}`}
                     >
                       <div className="entry-top">
                         <span
@@ -837,6 +924,12 @@ export default function App() {
                             : 'YA INGRESÓ'}
                         </span>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {isPendingSync && (
+                            <span className="pill pill-offline-sync">
+                              <CloudOff size={12} />
+                              Pendiente de sincronizar
+                            </span>
+                          )}
                           <span className="pill pill-neutral">{visitorLabel(entry.visitorType)}</span>
                           <span className="pill pill-neutral">
                             {entry.source === 'CORREO_INSTITUCIONAL' ? 'Correo' : 'Manual'}
@@ -917,7 +1010,8 @@ export default function App() {
 
                       {(() => {
                         const staged = stagedPlateByEntry[entry.id] || null;
-                        const plateImgUrl = staged?.dataUrl || entry.plateImageData || '';
+                        const rawPlateUrl = staged?.dataUrl || entry.plateImageData || '';
+                        const plateImgUrl = isSafePlateImageDataUrl(rawPlateUrl) ? rawPlateUrl : '';
                         const plateImgName = staged?.fileName || entry.plateImageName || 'placa_vehiculo.jpg';
                         return (
                           <>
@@ -1050,11 +1144,19 @@ export default function App() {
           onClose={() => setEditorEntry(null)}
           onSave={async (formValues) => {
             if (editorEntry.mode === 'create') {
-              await createEntry(formValues, profile);
-              showToast('Ingreso creado');
+              const res = await createEntry(formValues, profile);
+              showToast(
+                res?.queuedOffline
+                  ? 'Ingreso guardado offline. Se sincronizará al volver el internet.'
+                  : 'Ingreso creado'
+              );
             } else {
-              await updateEntry(editorEntry.item, formValues, profile);
-              showToast('Ingreso actualizado');
+              const res = await updateEntry(editorEntry.item, formValues, profile);
+              showToast(
+                res?.queuedOffline
+                  ? 'Actualización guardada offline. Se sincronizará al volver el internet.'
+                  : 'Ingreso actualizado'
+              );
             }
             setEditorEntry(null);
           }}
@@ -1065,8 +1167,12 @@ export default function App() {
         <EmailImportModal
           onClose={() => setShowImportModal(false)}
           onImport={async (drafts) => {
-            const count = await importEntriesBatch(drafts, profile);
-            showToast(`${count} ingreso(s) importados`);
+            const res = await importEntriesBatch(drafts, profile);
+            showToast(
+              res?.queuedOffline
+                ? `${res.count} ingreso(s) guardados offline. Se subirán al volver el internet.`
+                : `${res.count} ingreso(s) importados`
+            );
             setShowImportModal(false);
           }}
         />
@@ -1084,7 +1190,7 @@ export default function App() {
         />
       )}
 
-      {previewImageModal && (
+      {previewImageModal && isSafePlateImageDataUrl(previewImageModal.dataUrl) && (
         <div
           className="modal-backdrop"
           role="dialog"
@@ -1302,6 +1408,7 @@ function PlateImageAttachTrigger({ disabled = false, title = 'Adjuntar imagen de
 }
 
 function PlateImagePreview({ fileName, dataUrl, subtitle, onZoom, onRemove }) {
+  const safeSrc = isSafePlateImageDataUrl(dataUrl) ? dataUrl : '';
   return (
     <div className="plate-preview-card">
       <button
@@ -1310,7 +1417,11 @@ function PlateImagePreview({ fileName, dataUrl, subtitle, onZoom, onRemove }) {
         onClick={onZoom}
         title="Ampliar foto de la placa"
       >
-        <img src={dataUrl} alt={`Placa ${fileName}`} className="plate-preview-thumb" />
+        {safeSrc ? (
+          <img src={safeSrc} alt={`Placa ${fileName}`} className="plate-preview-thumb" />
+        ) : (
+          <ImageIcon size={20} />
+        )}
         <span className="plate-preview-zoom-badge">
           <ZoomIn size={12} />
         </span>
@@ -1554,7 +1665,7 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
               </div>
             </div>
 
-            {form.plateImageData && (
+            {isSafePlateImageDataUrl(form.plateImageData) && (
               <div className="form-field full">
                 <PlateImagePreview
                   fileName={form.plateImageName}
@@ -1668,7 +1779,7 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
           </div>
         </form>
 
-        {zoomPhoto && form.plateImageData && (
+        {zoomPhoto && isSafePlateImageDataUrl(form.plateImageData) && (
           <div
             className="modal-backdrop"
             role="dialog"
