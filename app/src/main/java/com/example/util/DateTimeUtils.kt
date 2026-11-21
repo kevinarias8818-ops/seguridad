@@ -19,7 +19,20 @@ object DateTimeUtils {
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
     private val fullDateTimeFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
 
+    private val fileStampFormat = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
+
     fun todayIso(): String = isoDateFormat.format(Date())
+
+    fun isoDateDaysAgo(daysAgo: Int, nowMillis: Long = System.currentTimeMillis()): String {
+        val cal = Calendar.getInstance().apply {
+            timeInMillis = nowMillis
+            add(Calendar.DAY_OF_YEAR, -daysAgo)
+        }
+        return isoDateFormat.format(cal.time)
+    }
+
+    fun formatFileStamp(nowMillis: Long = System.currentTimeMillis()): String =
+        fileStampFormat.format(Date(nowMillis))
 
     fun formatIsoToDisplay(isoDate: String): String {
         return try {
@@ -37,6 +50,11 @@ object DateTimeUtils {
 
     fun formatDateTime(timestamp: Timestamp?): String {
         if (timestamp == null) return "Pendiente"
+        return fullDateTimeFormat.format(timestamp.toDate())
+    }
+
+    fun formatDateTimeOrDefault(timestamp: Timestamp?, fallback: String): String {
+        if (timestamp == null) return fallback
         return fullDateTimeFormat.format(timestamp.toDate())
     }
 

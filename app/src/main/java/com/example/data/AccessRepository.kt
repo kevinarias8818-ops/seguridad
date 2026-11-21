@@ -288,6 +288,28 @@ class AccessRepository(
         )
     }
 
+    suspend fun fetchEntriesForUnit(unitId: String): Result<List<AccessEntry>> {
+        val path = "entries"
+        return try {
+            requireUserId()
+            val safeUnitId = unitId.trim().ifBlank { DEFAULT_UNIT_ID }
+            val snapshot = db.collection("entries")
+                .whereEqualTo("unitId", safeUnitId)
+                .get()
+                .await()
+            val list = snapshot.toObjects(
+                AccessEntry::class.java,
+                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+            )
+            Result.success(list)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun createEntry(
         draft: EntryDraft,
         actorUid: String,
@@ -375,6 +397,13 @@ class AccessRepository(
                 "status" to newStatus.name,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            if (validated.plateImageData.isNotBlank()) {
+                updates["plateImageName"] = validated.plateImageName.ifBlank { "placa.jpg" }
+                updates["plateImageData"] = validated.plateImageData
+            } else if (existingEntry.plateImageData.isNotBlank() || existingEntry.plateImageName.isNotBlank()) {
+                updates["plateImageName"] = FieldValue.delete()
+                updates["plateImageData"] = FieldValue.delete()
+            }
 
             when (newStatus) {
                 EntryStatus.PENDIENTE -> {
@@ -428,7 +457,9 @@ class AccessRepository(
     suspend fun markCheckInNow(
         entryId: String,
         actorUid: String,
-        actorName: String
+        actorName: String,
+        plateImageName: String? = null,
+        plateImageData: String? = null
     ): Result<Unit> {
         val docPath = "entries/$entryId"
         return try {
@@ -437,12 +468,52 @@ class AccessRepository(
             require(entryId.isNotBlank()) { "ID de registro inválido." }
             val safeActorName = actorName.trim().take(120).ifBlank { "Operador" }
 
+            val updates = mutableMapOf<String, Any>(
+                "status" to EntryStatus.INGRESO.name,
+                "checkInAt" to FieldValue.serverTimestamp(),
+                "checkInByUid" to uid,
+                "checkInByName" to safeActorName,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (!plateImageData.isNullOrBlank()) {
+                val safeData = plateImageData.trim()
+                require(safeData.startsWith("data:image/") && safeData.length in 22..250_000) {
+                    "La imagen de la placa excede el tamaño permitido."
+                }
+                updates["plateImageName"] = plateImageName?.trim()?.take(160)?.ifBlank { "placa_ingreso.jpg" }
+                    ?: "placa_ingreso.jpg"
+                updates["plateImageData"] = safeData
+            }
+
+            db.collection("entries").document(entryId).update(updates).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun attachPlateImage(
+        entryId: String,
+        plateImageName: String,
+        plateImageData: String
+    ): Result<Unit> {
+        val docPath = "entries/$entryId"
+        return try {
+            requireUserId()
+            require(entryId.isNotBlank()) { "ID de registro inválido." }
+            val safeData = plateImageData.trim()
+            require(safeData.startsWith("data:image/") && safeData.length in 22..250_000) {
+                "La imagen de la placa excede el tamaño permitido."
+            }
+            val safeName = plateImageName.trim().take(160).ifBlank { "placa.jpg" }
+
             db.collection("entries").document(entryId).update(
                 mapOf(
-                    "status" to EntryStatus.INGRESO.name,
-                    "checkInAt" to FieldValue.serverTimestamp(),
-                    "checkInByUid" to uid,
-                    "checkInByName" to safeActorName,
+                    "plateImageName" to safeName,
+                    "plateImageData" to safeData,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
@@ -524,6 +595,12 @@ class AccessRepository(
         require(cleanUnit.length in 1..80) {
             "La dependencia o unidad destino es obligatoria (máx. 80 caracteres)."
         }
+        val cleanImageData = draft.plateImageData.trim()
+        if (cleanImageData.isNotEmpty()) {
+            require(cleanImageData.startsWith("data:image/") && cleanImageData.length in 22..250_000) {
+                "La imagen de la placa es inválida o supera el tamaño permitido."
+            }
+        }
         return draft.copy(
             entryDate = cleanDate,
             rank = draft.rank.trim().take(40),
@@ -533,7 +610,13 @@ class AccessRepository(
             destinationUnit = cleanUnit,
             reason = draft.reason.trim().take(160),
             expectedTime = draft.expectedTime.trim().take(20),
-            notes = draft.notes.trim().take(300)
+            notes = draft.notes.trim().take(300),
+            plateImageName = if (cleanImageData.isNotEmpty()) {
+                draft.plateImageName.trim().take(160).ifBlank { "placa.jpg" }
+            } else {
+                ""
+            },
+            plateImageData = cleanImageData
         )
     }
 
@@ -546,7 +629,7 @@ class AccessRepository(
         val validated = validateDraft(draft)
         val safeActorName = actorName.trim().take(120).ifBlank { "Administrador" }
         val safeUnitId = unitId.trim().take(64).ifBlank { DEFAULT_UNIT_ID }
-        return mapOf(
+        val payload = mutableMapOf<String, Any>(
             "unitId" to safeUnitId,
             "entryDate" to validated.entryDate,
             "rank" to validated.rank,
@@ -565,5 +648,10 @@ class AccessRepository(
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
+        if (validated.plateImageData.isNotBlank()) {
+            payload["plateImageName"] = validated.plateImageName.ifBlank { "placa.jpg" }
+            payload["plateImageData"] = validated.plateImageData
+        }
+        return payload
     }
 }

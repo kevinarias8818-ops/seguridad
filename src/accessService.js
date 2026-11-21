@@ -4,6 +4,7 @@ import {
   deleteField,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -170,6 +171,12 @@ export function subscribeEntries(unitId, dateIsoOrNull, onData, onError) {
   );
 }
 
+export async function fetchAllEntriesForUnit(unitId) {
+  const q = query(collection(db, 'entries'), where('unitId', '==', unitId || UNIT_ID));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 export function subscribeAllUsers(onData, onError) {
   const q = query(collection(db, 'users'));
   return onSnapshot(
@@ -189,6 +196,64 @@ export function subscribeAllUsers(onData, onError) {
   );
 }
 
+const MAX_PLATE_DIM_PX = 640;
+const MAX_PLATE_DATA_URL_CHARS = 220000;
+
+function validatePlateAttachment(plateImageName, plateImageData) {
+  const cleanData = (plateImageData || '').trim();
+  if (!cleanData) return null;
+  if (!cleanData.startsWith('data:image/') || cleanData.length < 22 || cleanData.length > 250000) {
+    throw new Error('La imagen de la placa es inválida o supera el tamaño permitido.');
+  }
+  const cleanName = (plateImageName || '').trim().slice(0, 160) || 'placa.jpg';
+  return { fileName: cleanName, dataUrl: cleanData };
+}
+
+export function compressPlateImageFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || (file.type && !file.type.startsWith('image/'))) {
+      reject(new Error('Selecciona un archivo de imagen válido (image/*).'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo seleccionado.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('El archivo no es una imagen compatible.'));
+      img.onload = () => {
+        const scale = Math.min(1, MAX_PLATE_DIM_PX / Math.max(img.width || 1, img.height || 1));
+        const targetW = Math.max(1, Math.round((img.width || 1) * scale));
+        const targetH = Math.max(1, Math.round((img.height || 1) * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('No se pudo procesar la imagen en este navegador.'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        let chosenUrl = '';
+        for (const q of [0.78, 0.64, 0.5, 0.36]) {
+          const candidate = canvas.toDataURL('image/jpeg', q);
+          if (candidate.length <= MAX_PLATE_DATA_URL_CHARS) {
+            chosenUrl = candidate;
+            break;
+          }
+        }
+        if (!chosenUrl) {
+          reject(new Error('La imagen sigue siendo muy pesada después de comprimir.'));
+          return;
+        }
+        const safeName = (file.name || 'placa_vehiculo.jpg').trim().slice(0, 160) || 'placa_vehiculo.jpg';
+        resolve({ fileName: safeName, dataUrl: chosenUrl });
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function buildSanitizedCreatePayload(draft, currentUser) {
   const safeName = (draft.fullName || '').trim().slice(0, 120);
   if (safeName.length < 2) {
@@ -199,7 +264,7 @@ function buildSanitizedCreatePayload(draft, currentUser) {
   const safeDest = ((draft.destinationUnit || '').trim() || 'Dependencia Principal').slice(0, 80);
   const safeCreatorName = ((currentUser.displayName || currentUser.email || 'Admin').trim()).slice(0, 120);
 
-  return {
+  const payload = {
     unitId: currentUser.unitId || UNIT_ID,
     entryDate,
     rank: (draft.rank || '').trim().slice(0, 40),
@@ -218,6 +283,14 @@ function buildSanitizedCreatePayload(draft, currentUser) {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+
+  const validImage = validatePlateAttachment(draft.plateImageName, draft.plateImageData);
+  if (validImage) {
+    payload.plateImageName = validImage.fileName;
+    payload.plateImageData = validImage.dataUrl;
+  }
+
+  return payload;
 }
 
 export async function createEntry(draft, currentUser) {
@@ -275,6 +348,15 @@ export async function updateEntry(entry, draft, currentUser) {
     updatedAt: serverTimestamp(),
   };
 
+  const validImage = validatePlateAttachment(draft.plateImageName, draft.plateImageData);
+  if (validImage) {
+    updates.plateImageName = validImage.fileName;
+    updates.plateImageData = validImage.dataUrl;
+  } else if (entry.plateImageData || entry.plateImageName) {
+    updates.plateImageName = deleteField();
+    updates.plateImageData = deleteField();
+  }
+
   const actorName = ((currentUser.displayName || currentUser.email || 'Admin').trim()).slice(0, 120);
 
   if (nextStatus === 'PENDIENTE') {
@@ -315,13 +397,33 @@ export async function updateEntry(entry, draft, currentUser) {
   await updateDoc(doc(db, 'entries', entry.id), updates);
 }
 
-export async function markCheckInNow(entryId, currentUser) {
+export async function markCheckInNow(entryId, currentUser, plateAttachment = null) {
   const safeCheckerName = ((currentUser.displayName || currentUser.email || 'Operador').trim()).slice(0, 120);
-  await updateDoc(doc(db, 'entries', entryId), {
+  const updates = {
     status: 'INGRESO',
     checkInAt: serverTimestamp(),
     checkInByUid: currentUser.userId,
     checkInByName: safeCheckerName,
+    updatedAt: serverTimestamp(),
+  };
+  if (plateAttachment) {
+    const validImage = validatePlateAttachment(plateAttachment.fileName, plateAttachment.dataUrl);
+    if (validImage) {
+      updates.plateImageName = validImage.fileName;
+      updates.plateImageData = validImage.dataUrl;
+    }
+  }
+  await updateDoc(doc(db, 'entries', entryId), updates);
+}
+
+export async function attachPlateImage(entryId, plateAttachment) {
+  const validImage = validatePlateAttachment(plateAttachment?.fileName, plateAttachment?.dataUrl);
+  if (!validImage) {
+    throw new Error('Selecciona una imagen de placa válida.');
+  }
+  await updateDoc(doc(db, 'entries', entryId), {
+    plateImageName: validImage.fileName,
+    plateImageData: validImage.dataUrl,
     updatedAt: serverTimestamp(),
   });
 }

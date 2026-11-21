@@ -81,6 +81,14 @@
           "type": "string",
           "description": "Placa del vehículo o vacío si es peatonal."
         },
+        "plateImageName": {
+          "type": "string",
+          "description": "Nombre del archivo de imagen adjunto de la placa vehicular."
+        },
+        "plateImageData": {
+          "type": "string",
+          "description": "Imagen comprimida de la placa vehicular en formato Data URL (data:image/jpeg;base64,...)."
+        },
         "destinationUnit": {
           "type": "string",
           "description": "Dependencia o unidad destino."

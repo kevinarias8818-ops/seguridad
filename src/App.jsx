@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getRedirectResult,
   onAuthStateChanged,
@@ -8,10 +8,14 @@ import {
 } from 'firebase/auth';
 import {
   AlertCircle,
+  Camera,
   CheckCircle2,
   Clock,
+  Download,
   Edit3,
   Eye,
+  FileSpreadsheet,
+  Image as ImageIcon,
   LogIn,
   LogOut,
   Mail,
@@ -24,12 +28,16 @@ import {
   UserCheck,
   Users,
   X,
+  ZoomIn,
 } from 'lucide-react';
 import { auth, firebaseConfig, googleProvider, UNIT_ID } from './firebase.js';
 import {
+  attachPlateImage,
+  compressPlateImageFile,
   createEntry,
   deleteEntry,
   ensureUserProfile,
+  fetchAllEntriesForUnit,
   formatDateTimeShort,
   formatTimeHm,
   getEntryHour,
@@ -46,6 +54,11 @@ import {
   updateUserRoleAndStatus,
 } from './accessService.js';
 import {
+  REPORT_PERIODS,
+  buildAccessExcelBlob,
+  downloadBlobFile,
+} from './excelExport.js';
+import {
   SAMPLE_INSTITUTIONAL_EMAIL,
   VISITOR_TYPES,
   parseInstitutionalEmail,
@@ -57,6 +70,8 @@ const EMPTY_DRAFT = {
   fullName: '',
   documentNumber: '',
   plate: '',
+  plateImageName: '',
+  plateImageData: '',
   destinationUnit: '',
   reason: '',
   visitorType: 'VISITANTE',
@@ -94,7 +109,10 @@ export default function App() {
   // Modals
   const [editorEntry, setEditorEntry] = useState(null); // null | { mode: 'create' | 'edit', item? }
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showExcelModal, setShowExcelModal] = useState(false);
   const [busyId, setBusyId] = useState('');
+  const [stagedPlateByEntry, setStagedPlateByEntry] = useState({});
+  const [previewImageModal, setPreviewImageModal] = useState(null);
 
   function showToast(msg) {
     setToastMsg(msg);
@@ -269,8 +287,28 @@ export default function App() {
     setBusyId(entry.id);
     setErrorMsg('');
     try {
-      await markCheckInNow(entry.id, profile);
-      showToast(`Ingreso marcado: ${entry.fullName}`);
+      const staged = stagedPlateByEntry[entry.id] || null;
+      await markCheckInNow(entry.id, profile, staged);
+      setStagedPlateByEntry((prev) => {
+        if (!prev[entry.id]) return prev;
+        const next = { ...prev };
+        delete next[entry.id];
+        return next;
+      });
+      showToast(staged ? `Ingreso y placa guardados: ${entry.fullName}` : `Ingreso marcado: ${entry.fullName}`);
+    } catch (err) {
+      setErrorMsg(humanizeFirebaseError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  async function handleAttachEntryPlate(entry, attachment) {
+    setBusyId(entry.id);
+    setErrorMsg('');
+    try {
+      await attachPlateImage(entry.id, attachment);
+      showToast(`Imagen de placa guardada: ${attachment.fileName}`);
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
     } finally {
@@ -653,6 +691,14 @@ export default function App() {
                   <Mail size={18} />
                   Importar correo institucional
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setShowExcelModal(true)}
+                >
+                  <FileSpreadsheet size={18} />
+                  Descargar Excel (24h / 7 días)
+                </button>
               </div>
             )}
 
@@ -851,29 +897,90 @@ export default function App() {
                         </div>
                       )}
 
-                      {isPending && (
-                        <button
-                          type="button"
-                          className="btn btn-checkin"
-                          disabled={isBusy}
-                          onClick={() => handleCheckIn(entry)}
-                        >
-                          <CheckCircle2 size={20} />
-                          {isBusy ? 'Registrando...' : 'Marcar ingreso ahora'}
-                        </button>
-                      )}
+                      {(() => {
+                        const staged = stagedPlateByEntry[entry.id] || null;
+                        const plateImgUrl = staged?.dataUrl || entry.plateImageData || '';
+                        const plateImgName = staged?.fileName || entry.plateImageName || 'placa_vehiculo.jpg';
+                        return (
+                          <>
+                            {plateImgUrl && (
+                              <PlateImagePreview
+                                fileName={plateImgName}
+                                dataUrl={plateImgUrl}
+                                subtitle={
+                                  staged
+                                    ? 'Lista para guardar al marcar ingreso'
+                                    : 'Foto de placa adjunta (toca para ampliar)'
+                                }
+                                onZoom={() =>
+                                  setPreviewImageModal({ fileName: plateImgName, dataUrl: plateImgUrl })
+                                }
+                                onRemove={
+                                  staged
+                                    ? () =>
+                                        setStagedPlateByEntry((prev) => {
+                                          const next = { ...prev };
+                                          delete next[entry.id];
+                                          return next;
+                                        })
+                                    : undefined
+                                }
+                              />
+                            )}
 
-                      {isEntered && (
-                        <button
-                          type="button"
-                          className="btn btn-checkout"
-                          disabled={isBusy}
-                          onClick={() => handleCheckOut(entry)}
-                        >
-                          <LogOut size={20} />
-                          {isBusy ? 'Registrando salida...' : 'Marcar salida ahora'}
-                        </button>
-                      )}
+                            {isPending && (
+                              <div className="checkin-action-row">
+                                <button
+                                  type="button"
+                                  className="btn btn-checkin"
+                                  disabled={isBusy}
+                                  onClick={() => handleCheckIn(entry)}
+                                >
+                                  <CheckCircle2 size={20} />
+                                  {isBusy ? 'Registrando...' : 'Marcar ingreso ahora'}
+                                </button>
+                                <PlateImageAttachTrigger
+                                  disabled={isBusy}
+                                  title="Adjuntar imagen de la placa"
+                                  onSelected={(attachment) =>
+                                    setStagedPlateByEntry((prev) => ({
+                                      ...prev,
+                                      [entry.id]: attachment,
+                                    }))
+                                  }
+                                  onError={(msg) => setErrorMsg(msg)}
+                                />
+                              </div>
+                            )}
+
+                            {isEntered && (
+                              <div className="checkin-action-row">
+                                <button
+                                  type="button"
+                                  className="btn btn-checkout"
+                                  disabled={isBusy}
+                                  onClick={() => handleCheckOut(entry)}
+                                >
+                                  <LogOut size={20} />
+                                  {isBusy ? 'Registrando salida...' : 'Marcar salida ahora'}
+                                </button>
+                                <PlateImageAttachTrigger
+                                  disabled={isBusy}
+                                  title={
+                                    plateImgUrl
+                                      ? 'Cambiar imagen de la placa'
+                                      : 'Adjuntar imagen de la placa'
+                                  }
+                                  onSelected={(attachment) =>
+                                    handleAttachEntryPlate(entry, attachment)
+                                  }
+                                  onError={(msg) => setErrorMsg(msg)}
+                                />
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
 
                       {effectiveIsAdmin && (
                         <div className="entry-footer-actions">
@@ -947,10 +1054,262 @@ export default function App() {
         />
       )}
 
+      {showExcelModal && effectiveIsAdmin && (
+        <ExcelExportModal
+          profile={profile}
+          onClose={() => setShowExcelModal(false)}
+          onExported={(res) =>
+            showToast(
+              `Excel generado (${res.entryCount} registros, ${res.imageCount} fotos): ${res.fileName}`
+            )
+          }
+        />
+      )}
+
+      {previewImageModal && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setPreviewImageModal(null)}
+        >
+          <div className="modal-card" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">{previewImageModal.fileName || 'Imagen de placa'}</h2>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline"
+                onClick={() => setPreviewImageModal(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <img
+              src={previewImageModal.dataUrl}
+              alt="Vista ampliada de la placa"
+              style={{
+                width: '100%',
+                maxHeight: '70dvh',
+                objectFit: 'contain',
+                borderRadius: 12,
+                background: '#0a1222',
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {toastMsg && (
         <div className="toast" role="status" aria-live="polite">
           {toastMsg}
         </div>
+      )}
+    </div>
+  );
+}
+
+function ExcelExportModal({ profile, onClose, onExported }) {
+  const [busyPeriod, setBusyPeriod] = useState('');
+  const [err, setErr] = useState('');
+
+  async function handleDownload(periodKey) {
+    if (!profile || profile.role !== 'ADMIN' || profile.active !== true) {
+      setErr('Solo el rol Administrador puede descargar reportes Excel.');
+      return;
+    }
+    setErr('');
+    setBusyPeriod(periodKey);
+    try {
+      const allEntries = await fetchAllEntriesForUnit(profile.unitId || UNIT_ID);
+      const result = buildAccessExcelBlob(allEntries, periodKey, profile);
+      downloadBlobFile(result.blob, result.fileName);
+      onExported(result);
+    } catch (error) {
+      setErr(humanizeFirebaseError(error));
+    } finally {
+      setBusyPeriod('');
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card" style={{ maxWidth: 520 }}>
+        <div className="modal-header">
+          <h2 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FileSpreadsheet size={20} color="#38bdf8" />
+            Descargar Excel de ingresos y salidas
+          </h2>
+          <button
+            type="button"
+            className="btn btn-sm btn-outline"
+            disabled={Boolean(busyPeriod)}
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <p style={{ margin: '0 0 14px', fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+          Incluye todos los datos de ingresos y salidas junto con las fotografías de placas
+          adjuntas incrustadas dentro del archivo <code>.xlsx</code>. Disponible únicamente para el
+          rol <strong>Administrador</strong>.
+        </p>
+
+        {err && (
+          <div className="error-banner" role="alert">
+            <AlertCircle size={17} />
+            <span>{err}</span>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[REPORT_PERIODS.LAST_24H, REPORT_PERIODS.LAST_7D].map((p) => {
+            const isWorking = busyPeriod === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className="btn btn-outline"
+                disabled={Boolean(busyPeriod)}
+                onClick={() => handleDownload(p.id)}
+                style={{
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  textAlign: 'left',
+                  padding: '12px 14px',
+                  height: 'auto',
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 800, color: '#fff' }}>{p.title}</div>
+                  <div className="time-col-sub" style={{ marginTop: 2 }}>
+                    {p.subtitle}
+                  </div>
+                </div>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#38bdf8' }}>
+                  <Download size={18} />
+                  {isWorking ? 'Generando...' : '.XLSX'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="modal-footer">
+          <button
+            type="button"
+            className="btn btn-outline"
+            disabled={Boolean(busyPeriod)}
+            onClick={onClose}
+          >
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlateImageAttachTrigger({ disabled = false, title = 'Adjuntar imagen de la placa', onSelected, onError }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const cameraInputRef = useRef(null);
+  const galleryInputRef = useRef(null);
+
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    setMenuOpen(false);
+    if (!file) return;
+    setProcessing(true);
+    try {
+      const attachment = await compressPlateImageFile(file);
+      onSelected(attachment);
+    } catch (err) {
+      onError?.(err?.message || 'No se pudo procesar la imagen.');
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  return (
+    <div className="plate-attach-wrap">
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
+      <input
+        ref={galleryInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
+      <button
+        type="button"
+        className="btn btn-icon-attach"
+        title={title}
+        aria-label={title}
+        disabled={disabled || processing}
+        onClick={() => setMenuOpen((prev) => !prev)}
+      >
+        <Camera size={20} />
+      </button>
+      {menuOpen && (
+        <div className="plate-source-menu" role="menu">
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => cameraInputRef.current?.click()}
+          >
+            <Camera size={15} />
+            Cámara trasera
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-outline"
+            onClick={() => galleryInputRef.current?.click()}
+          >
+            <ImageIcon size={15} />
+            Archivo (image/*)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlateImagePreview({ fileName, dataUrl, subtitle, onZoom, onRemove }) {
+  return (
+    <div className="plate-preview-card">
+      <button
+        type="button"
+        className="plate-preview-thumb-btn"
+        onClick={onZoom}
+        title="Ampliar foto de la placa"
+      >
+        <img src={dataUrl} alt={`Placa ${fileName}`} className="plate-preview-thumb" />
+        <span className="plate-preview-zoom-badge">
+          <ZoomIn size={12} />
+        </span>
+      </button>
+      <div className="plate-preview-meta">
+        <div className="plate-preview-name">{fileName || 'placa_vehiculo.jpg'}</div>
+        <div className="time-col-sub">{subtitle || 'Foto de placa adjunta'}</div>
+      </div>
+      {onRemove && (
+        <button
+          type="button"
+          className="btn btn-sm btn-danger-outline"
+          onClick={onRemove}
+          aria-label="Quitar imagen adjunta"
+        >
+          <X size={15} />
+        </button>
       )}
     </div>
   );
@@ -1054,6 +1413,8 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
     fullName: initialData.fullName || '',
     documentNumber: initialData.documentNumber || '',
     plate: initialData.plate || '',
+    plateImageName: initialData.plateImageName || '',
+    plateImageData: initialData.plateImageData || '',
     destinationUnit: initialData.destinationUnit || '',
     reason: initialData.reason || '',
     visitorType: initialData.visitorType || 'VISITANTE',
@@ -1063,6 +1424,7 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [zoomPhoto, setZoomPhoto] = useState(false);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -1149,15 +1511,48 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
             </div>
 
             <div className="form-field">
-              <label className="form-label">Placa (vacío si es peatonal)</label>
-              <input
-                className="input mono"
-                maxLength={20}
-                placeholder="Ej. KLM-482"
-                value={form.plate}
-                onChange={(e) => setForm({ ...form, plate: e.target.value.toUpperCase() })}
-              />
+              <label className="form-label">Placa y foto (opcional)</label>
+              <div className="plate-input-row">
+                <input
+                  className="input mono"
+                  maxLength={20}
+                  placeholder="Ej. KLM-482"
+                  value={form.plate}
+                  onChange={(e) => setForm({ ...form, plate: e.target.value.toUpperCase() })}
+                />
+                <PlateImageAttachTrigger
+                  disabled={saving}
+                  title="Adjuntar imagen de la placa"
+                  onSelected={(attachment) => {
+                    setErr('');
+                    setForm((prev) => ({
+                      ...prev,
+                      plateImageName: attachment.fileName,
+                      plateImageData: attachment.dataUrl,
+                    }));
+                  }}
+                  onError={(msg) => setErr(msg)}
+                />
+              </div>
             </div>
+
+            {form.plateImageData && (
+              <div className="form-field full">
+                <PlateImagePreview
+                  fileName={form.plateImageName}
+                  dataUrl={form.plateImageData}
+                  subtitle="Se guardará junto con este ingreso"
+                  onZoom={() => setZoomPhoto(true)}
+                  onRemove={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      plateImageName: '',
+                      plateImageData: '',
+                    }))
+                  }
+                />
+              </div>
+            )}
 
             <div className="form-field">
               <label className="form-label">Dependencia / Unidad destino *</label>
@@ -1254,6 +1649,33 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
             </button>
           </div>
         </form>
+
+        {zoomPhoto && form.plateImageData && (
+          <div
+            className="modal-backdrop"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setZoomPhoto(false)}
+          >
+            <div className="modal-card" style={{ maxWidth: 500 }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 className="modal-title">{form.plateImageName || 'Imagen de placa'}</h3>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline"
+                  onClick={() => setZoomPhoto(false)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <img
+                src={form.plateImageData}
+                alt="Vista ampliada de placa"
+                style={{ width: '100%', maxHeight: '65dvh', objectFit: 'contain', borderRadius: 12 }}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

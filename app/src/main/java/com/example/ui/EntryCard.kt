@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CheckCircle
@@ -28,12 +29,18 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -52,14 +59,19 @@ import com.example.ui.theme.Sky100
 import com.example.ui.theme.Sky600
 import com.example.ui.theme.Sky900
 import com.example.util.DateTimeUtils
+import com.example.util.PlateImageAttachment
+import com.example.util.PlateImageAttachmentPreviewRow
+import com.example.util.rememberPlateImagePickerLauncher
 
 @Composable
 fun EntryCard(
     entry: AccessEntry,
     isAdminActionsEnabled: Boolean,
     isBusy: Boolean,
-    onCheckInNow: () -> Unit,
+    onCheckInNow: (PlateImageAttachment?) -> Unit,
     onCheckOutNow: () -> Unit,
+    onAttachPlateImage: (PlateImageAttachment) -> Unit,
+    onMediaError: (String) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
@@ -69,6 +81,27 @@ fun EntryCard(
     val isCheckedIn = parsedStatus == EntryStatus.INGRESO
     val isCheckedOut = parsedStatus == EntryStatus.SALIDA
     val hasEntered = isCheckedIn || isCheckedOut
+
+    var stagedAttachment by remember(entry.id) { mutableStateOf<PlateImageAttachment?>(null) }
+    LaunchedEffect(entry.status, entry.plateImageData) {
+        if (entry.parsedStatus != EntryStatus.PENDIENTE || entry.plateImageData.isNotBlank()) {
+            stagedAttachment = null
+        }
+    }
+
+    val openPlatePicker = rememberPlateImagePickerLauncher(
+        onImageSelected = { attachment ->
+            if (isPending) {
+                stagedAttachment = attachment
+            } else if (isCheckedIn) {
+                onAttachPlateImage(attachment)
+            }
+        },
+        onError = onMediaError
+    )
+
+    val displayPlateFileName = stagedAttachment?.fileName ?: entry.plateImageName
+    val displayPlateDataUrl = stagedAttachment?.dataUrl ?: entry.plateImageData
 
     val borderColor = when (parsedStatus) {
         EntryStatus.PENDIENTE -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.65f)
@@ -392,40 +425,77 @@ fun EntryCard(
                 )
             }
 
-            // Action area: Check-in button, Check-out button, or complete audit trail
-            if (isPending) {
-                Button(
-                    onClick = onCheckInNow,
-                    enabled = !isBusy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("check_in_button_${entry.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Emerald600,
-                        contentColor = MaterialTheme.colorScheme.surface
-                    )
-                ) {
-                    if (isBusy) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Registrando...", style = MaterialTheme.typography.labelLarge)
+            if (displayPlateDataUrl.isNotBlank()) {
+                PlateImageAttachmentPreviewRow(
+                    fileName = displayPlateFileName,
+                    dataUrl = displayPlateDataUrl,
+                    subtitle = if (stagedAttachment != null) {
+                        "Lista para guardar al marcar ingreso"
                     } else {
-                        Icon(
-                            imageVector = Icons.Filled.HowToReg,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
+                        "Foto de placa adjunta (toca para ampliar)"
+                    },
+                    onReplace = if (isPending || isCheckedIn) openPlatePicker else null,
+                    onRemove = if (stagedAttachment != null) {
+                        { stagedAttachment = null }
+                    } else {
+                        null
+                    }
+                )
+            }
+
+            // Action area: Check-in button + attach plate photo, Check-out button, or complete audit trail
+            if (isPending) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = { onCheckInNow(stagedAttachment) },
+                        enabled = !isBusy,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(50.dp)
+                            .testTag("check_in_button_${entry.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Emerald600,
+                            contentColor = MaterialTheme.colorScheme.surface
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Marcar ingreso ahora",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
+                    ) {
+                        if (isBusy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Registrando...", style = MaterialTheme.typography.labelLarge)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.HowToReg,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Marcar ingreso ahora",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = openPlatePicker,
+                        enabled = !isBusy,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("card_attach_plate_${entry.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AddAPhoto,
+                            contentDescription = "Adjuntar imagen de la placa"
                         )
                     }
                 }
@@ -453,11 +523,26 @@ fun EntryCard(
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
-                            Icon(
-                                imageVector = Icons.Filled.CheckCircle,
-                                contentDescription = "Ingreso completado",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
+                            if (displayPlateDataUrl.isBlank()) {
+                                FilledTonalIconButton(
+                                    onClick = openPlatePicker,
+                                    enabled = !isBusy,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("card_attach_plate_${entry.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.AddAPhoto,
+                                        contentDescription = "Adjuntar imagen de la placa"
+                                    )
+                                }
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.CheckCircle,
+                                    contentDescription = "Ingreso completado",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
 

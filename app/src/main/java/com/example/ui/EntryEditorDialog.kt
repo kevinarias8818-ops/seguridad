@@ -4,15 +4,23 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -21,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -30,6 +39,8 @@ import com.example.model.EntrySource
 import com.example.model.EntryStatus
 import com.example.model.VisitorType
 import com.example.util.DateTimeUtils
+import com.example.util.PlateImageAttachmentPreviewRow
+import com.example.util.rememberPlateImagePickerLauncher
 
 @Composable
 fun EntryEditorDialog(
@@ -37,7 +48,8 @@ fun EntryEditorDialog(
     isSaving: Boolean = false,
     onDismiss: () -> Unit,
     onSaveNew: (EntryDraft) -> Unit,
-    onSaveEdit: (entryId: String, draft: EntryDraft, status: EntryStatus, existing: AccessEntry) -> Unit
+    onSaveEdit: (entryId: String, draft: EntryDraft, status: EntryStatus, existing: AccessEntry) -> Unit,
+    onMediaError: (String) -> Unit = {}
 ) {
     val isEditing = existingEntry != null
     var rank by remember(existingEntry) { mutableStateOf(existingEntry?.rank.orEmpty()) }
@@ -57,7 +69,21 @@ fun EntryEditorDialog(
         mutableStateOf(existingEntry?.parsedStatus ?: EntryStatus.PENDIENTE)
     }
     var notes by remember(existingEntry) { mutableStateOf(existingEntry?.notes.orEmpty()) }
+    var plateImageName by remember(existingEntry) { mutableStateOf(existingEntry?.plateImageName.orEmpty()) }
+    var plateImageData by remember(existingEntry) { mutableStateOf(existingEntry?.plateImageData.orEmpty()) }
     var validationError by remember { mutableStateOf<String?>(null) }
+
+    val openPlatePicker = rememberPlateImagePickerLauncher(
+        onImageSelected = { attachment ->
+            plateImageName = attachment.fileName
+            plateImageData = attachment.dataUrl
+            validationError = null
+        },
+        onError = { message ->
+            validationError = message
+            onMediaError(message)
+        }
+    )
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -101,7 +127,8 @@ fun EntryEditorDialog(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
                         value = documentNumber,
@@ -109,19 +136,62 @@ fun EntryEditorDialog(
                         label = { Text("Cédula *") },
                         singleLine = true,
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(0.9f)
                             .testTag("entry_doc_input")
                     )
                     OutlinedTextField(
                         value = plate,
                         onValueChange = { plate = it.uppercase().take(20) },
-                        label = { Text("Placa (opcional)") },
+                        label = { Text("Placa") },
                         placeholder = { Text("ABC-123") },
                         singleLine = true,
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(0.95f)
                             .testTag("entry_plate_input")
                     )
+                    FilledTonalIconButton(
+                        onClick = openPlatePicker,
+                        enabled = !isSaving,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("attach_plate_image_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AddAPhoto,
+                            contentDescription = "Adjuntar imagen de la placa"
+                        )
+                    }
+                }
+
+                if (plateImageData.isNotBlank()) {
+                    PlateImageAttachmentPreviewRow(
+                        fileName = plateImageName,
+                        dataUrl = plateImageData,
+                        subtitle = "Imagen de placa lista para guardar con el ingreso",
+                        onReplace = openPlatePicker,
+                        onRemove = {
+                            plateImageName = ""
+                            plateImageData = ""
+                        }
+                    )
+                } else {
+                    OutlinedButton(
+                        onClick = openPlatePicker,
+                        enabled = !isSaving,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("attach_plate_image_row_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AddAPhoto,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Adjuntar foto de placa (opcional)")
+                    }
                 }
 
                 OutlinedTextField(
@@ -256,7 +326,9 @@ fun EntryEditorDialog(
                                 visitorType = visitorType,
                                 expectedTime = expectedTime.trim(),
                                 source = existingEntry?.parsedSource ?: EntrySource.MANUAL,
-                                notes = notes.trim()
+                                notes = notes.trim(),
+                                plateImageName = if (plateImageData.isNotBlank()) plateImageName else "",
+                                plateImageData = plateImageData
                             )
                             if (existingEntry != null) {
                                 onSaveEdit(existingEntry.id, draft, status, existingEntry)

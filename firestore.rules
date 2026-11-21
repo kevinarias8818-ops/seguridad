@@ -81,6 +81,8 @@ service cloud.firestore {
              data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
              data.documentNumber is string && data.documentNumber.size() >= 1 && data.documentNumber.size() <= 40 &&
              data.plate is string && data.plate.size() <= 20 &&
+             (!('plateImageName' in data) || (data.plateImageName is string && data.plateImageName.size() <= 160)) &&
+             (!('plateImageData' in data) || (data.plateImageData is string && data.plateImageData.size() >= 22 && data.plateImageData.size() <= 250000 && data.plateImageData[0:11] == 'data:image/')) &&
              data.destinationUnit is string && data.destinationUnit.size() >= 1 && data.destinationUnit.size() <= 80 &&
              (!('reason' in data) || (data.reason is string && data.reason.size() <= 160)) &&
              data.visitorType in ['PERSONAL', 'VISITANTE', 'PROVEEDOR', 'CONTRATISTA'] &&
@@ -198,6 +200,7 @@ service cloud.firestore {
                        ]) &&
                        incoming().keys().hasOnly([
                          'unitId', 'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
+                         'plateImageName', 'plateImageData',
                          'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
                          'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
                          'checkOutAt', 'checkOutByUid', 'checkOutByName',
@@ -209,7 +212,7 @@ service cloud.firestore {
 
       // Tiered Update:
       // 1. Admin can edit fields or adjust status
-      // 2. Active Operator can check in PENDIENTE -> INGRESO or check out INGRESO -> SALIDA
+      // 2. Active Operator can check in PENDIENTE -> INGRESO (with optional plate image), check out INGRESO -> SALIDA, or attach plate image
       allow update: if isSignedIn() &&
                        isValidId(entryId) &&
                        isValidEntry(incoming()) &&
@@ -223,6 +226,7 @@ service cloud.firestore {
                          (isAdmin() &&
                           incoming().diff(existing()).affectedKeys().hasOnly([
                             'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
+                            'plateImageName', 'plateImageData',
                             'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
                             'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
                             'checkOutAt', 'checkOutByUid', 'checkOutByName', 'updatedAt'
@@ -231,13 +235,19 @@ service cloud.firestore {
                           incoming().status == 'INGRESO' &&
                           incoming().checkInByUid == request.auth.uid &&
                           incoming().diff(existing()).affectedKeys().hasOnly([
-                            'status', 'checkInAt', 'checkInByUid', 'checkInByName', 'updatedAt'
+                            'status', 'checkInAt', 'checkInByUid', 'checkInByName',
+                            'plateImageName', 'plateImageData', 'updatedAt'
                           ])) ||
                          (existing().status == 'INGRESO' &&
                           incoming().status == 'SALIDA' &&
                           incoming().checkOutByUid == request.auth.uid &&
                           incoming().diff(existing()).affectedKeys().hasOnly([
                             'status', 'checkOutAt', 'checkOutByUid', 'checkOutByName', 'updatedAt'
+                          ])) ||
+                         (existing().status in ['PENDIENTE', 'INGRESO'] &&
+                          incoming().status == existing().status &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'plateImageName', 'plateImageData', 'updatedAt'
                           ]))
                        );
 

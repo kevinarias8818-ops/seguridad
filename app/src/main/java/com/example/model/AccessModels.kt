@@ -89,6 +89,8 @@ data class AccessEntry(
     val fullName: String = "",
     val documentNumber: String = "",
     val plate: String = "",
+    val plateImageName: String = "",
+    val plateImageData: String = "",
     val destinationUnit: String = "",
     val reason: String = "",
     val visitorType: String = VisitorType.VISITANTE.name,
@@ -125,7 +127,9 @@ data class EntryDraft(
     val visitorType: VisitorType,
     val expectedTime: String,
     val source: EntrySource,
-    val notes: String
+    val notes: String,
+    val plateImageName: String = "",
+    val plateImageData: String = ""
 )
 
 sealed interface UiState<out T> {

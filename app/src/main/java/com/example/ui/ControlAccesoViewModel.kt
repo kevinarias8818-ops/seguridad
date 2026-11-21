@@ -13,10 +13,15 @@ import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.example.notifications.FcmTokenManager
 import com.example.util.DateTimeUtils
+import com.example.util.ExcelReportGenerator
+import com.example.util.ExcelReportResult
+import com.example.util.PlateImageAttachment
+import com.example.util.ReportPeriod
 import com.example.util.TimeSlotFilter
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +37,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+sealed interface ExcelExportUiState {
+    data object Idle : ExcelExportUiState
+    data class Generating(val period: ReportPeriod) : ExcelExportUiState
+    data class Ready(val report: ExcelReportResult) : ExcelExportUiState
+    data class Error(val message: String) : ExcelExportUiState
+}
 
 data class EntryPushAlert(
     val entryId: String,
@@ -84,6 +97,9 @@ class ControlAccesoViewModel(
 
     private val _entryAlerts = MutableSharedFlow<EntryPushAlert>(extraBufferCapacity = 8)
     val entryAlerts = _entryAlerts.asSharedFlow()
+
+    private val _excelExportState = MutableStateFlow<ExcelExportUiState>(ExcelExportUiState.Idle)
+    val excelExportState: StateFlow<ExcelExportUiState> = _excelExportState.asStateFlow()
 
     private var hasLoadedInitialEntries = false
     private val knownEntryStatuses = mutableMapOf<String, String>()
@@ -242,22 +258,103 @@ class ControlAccesoViewModel(
         _snackbarEvents.tryEmit(msg)
     }
 
-    fun markCheckInNow(entry: AccessEntry) {
+    fun markCheckInNow(
+        entry: AccessEntry,
+        plateAttachment: PlateImageAttachment? = null
+    ) {
         val profile = (profileState.value as? UiState.Success)?.data ?: return
         viewModelScope.launch {
             _busyEntryId.value = entry.id
             val result = repository.markCheckInNow(
                 entryId = entry.id,
                 actorUid = currentUserId,
-                actorName = profile.displayName
+                actorName = profile.displayName,
+                plateImageName = plateAttachment?.fileName,
+                plateImageData = plateAttachment?.dataUrl
             )
             _busyEntryId.value = null
             result.onSuccess {
-                _snackbarEvents.tryEmit("Ingreso registrado: ${entry.fullName}")
+                val msg = if (plateAttachment != null) {
+                    "Ingreso y foto de placa registrados: ${entry.fullName}"
+                } else {
+                    "Ingreso registrado: ${entry.fullName}"
+                }
+                _snackbarEvents.tryEmit(msg)
             }.onFailure { error ->
                 _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo marcar el ingreso")
             }
         }
+    }
+
+    fun attachPlateImage(entry: AccessEntry, attachment: PlateImageAttachment) {
+        viewModelScope.launch {
+            _busyEntryId.value = entry.id
+            val result = repository.attachPlateImage(
+                entryId = entry.id,
+                plateImageName = attachment.fileName,
+                plateImageData = attachment.dataUrl
+            )
+            _busyEntryId.value = null
+            result.onSuccess {
+                _snackbarEvents.tryEmit("Imagen de placa guardada: ${attachment.fileName}")
+            }.onFailure { error ->
+                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo guardar la imagen de la placa")
+            }
+        }
+    }
+
+    fun showMessage(message: String) {
+        if (message.isNotBlank()) {
+            _snackbarEvents.tryEmit(message)
+        }
+    }
+
+    fun generateExcelReport(context: Context, period: ReportPeriod) {
+        val profile = (profileState.value as? UiState.Success)?.data
+        val isAuthorizedAdmin = profile != null &&
+            profile.active &&
+            profile.parsedRole == UserRole.ADMIN &&
+            !_simulateOperatorMode.value
+        if (!isAuthorizedAdmin) {
+            val msg = "Solo el rol Administrador puede descargar reportes en Excel."
+            _excelExportState.value = ExcelExportUiState.Error(msg)
+            _snackbarEvents.tryEmit(msg)
+            return
+        }
+        val appContext = context.applicationContext
+        viewModelScope.launch {
+            _excelExportState.value = ExcelExportUiState.Generating(period)
+            val fetchResult = repository.fetchEntriesForUnit(profile.unitId)
+            fetchResult.onSuccess { entries ->
+                val reportResult = runCatching {
+                    withContext(Dispatchers.IO) {
+                        ExcelReportGenerator.generateReportFile(
+                            context = appContext,
+                            entries = entries,
+                            period = period,
+                            generatedBy = profile.displayName.ifBlank { profile.email },
+                            unitId = profile.unitId
+                        )
+                    }
+                }
+                reportResult.onSuccess { report ->
+                    _excelExportState.value = ExcelExportUiState.Ready(report)
+                }.onFailure { err ->
+                    Log.w(TAG, "Error generating Excel report", err)
+                    _excelExportState.value = ExcelExportUiState.Error(
+                        err.localizedMessage ?: "No se pudo construir el archivo Excel."
+                    )
+                }
+            }.onFailure { err ->
+                _excelExportState.value = ExcelExportUiState.Error(
+                    err.localizedMessage ?: "No se pudieron consultar los registros de Firestore."
+                )
+            }
+        }
+    }
+
+    fun resetExcelExportState() {
+        _excelExportState.value = ExcelExportUiState.Idle
     }
 
     fun markCheckOutNow(entry: AccessEntry) {

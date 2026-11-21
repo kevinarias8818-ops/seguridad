@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.TableView
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -91,6 +92,7 @@ import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.example.notifications.NotificationHelper
 import com.example.util.DateTimeUtils
+import com.example.util.PlateImageAttachment
 import com.example.util.TimeSlotFilter
 import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.launch
@@ -117,6 +119,7 @@ fun MainDashboardRoute(
     val simulateOperator by viewModel.simulateOperatorMode.collectAsStateWithLifecycle()
     val busyEntryId by viewModel.busyEntryId.collectAsStateWithLifecycle()
     val isSubmitting by viewModel.isSubmitting.collectAsStateWithLifecycle()
+    val excelExportState by viewModel.excelExportState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -129,6 +132,7 @@ fun MainDashboardRoute(
     var showCreateDialog by remember { mutableStateOf(false) }
     var editingEntry by remember { mutableStateOf<AccessEntry?>(null) }
     var showEmailImportDialog by remember { mutableStateOf(false) }
+    var showExcelExportDialog by remember { mutableStateOf(false) }
     var entryToDelete by remember { mutableStateOf<AccessEntry?>(null) }
 
     val profile = (profileState as? UiState.Success)?.data
@@ -183,6 +187,10 @@ fun MainDashboardRoute(
     LaunchedEffect(isEffectiveAdmin) {
         if (!isEffectiveAdmin && currentTab == AppTab.USERS) {
             currentTab = AppTab.ENTRIES
+        }
+        if (!isEffectiveAdmin && showExcelExportDialog) {
+            showExcelExportDialog = false
+            viewModel.resetExcelExportState()
         }
     }
 
@@ -415,8 +423,14 @@ fun MainDashboardRoute(
                                 onTimeSlotChange = viewModel::updateTimeSlot,
                                 onOpenEmailImport = { showEmailImportDialog = true },
                                 onOpenCreateEntry = { showCreateDialog = true },
+                                onOpenExcelExport = {
+                                    viewModel.resetExcelExportState()
+                                    showExcelExportDialog = true
+                                },
                                 onCheckInNow = viewModel::markCheckInNow,
                                 onCheckOutNow = viewModel::markCheckOutNow,
+                                onAttachPlateImage = viewModel::attachPlateImage,
+                                onMediaError = viewModel::showMessage,
                                 onEditEntry = { editingEntry = it },
                                 onDeleteEntry = { entryToDelete = it },
                                 onRestoreAdminMode = { viewModel.toggleSimulateOperatorMode(false) },
@@ -437,7 +451,8 @@ fun MainDashboardRoute(
             onSaveNew = { draft ->
                 viewModel.createEntry(draft) { showCreateDialog = false }
             },
-            onSaveEdit = { _, _, _, _ -> }
+            onSaveEdit = { _, _, _, _ -> },
+            onMediaError = viewModel::showMessage
         )
     }
 
@@ -449,7 +464,8 @@ fun MainDashboardRoute(
             onSaveNew = {},
             onSaveEdit = { entryId, draft, status, existing ->
                 viewModel.updateEntry(entryId, draft, status, existing) { editingEntry = null }
-            }
+            },
+            onMediaError = viewModel::showMessage
         )
     }
 
@@ -460,6 +476,16 @@ fun MainDashboardRoute(
             onImportBatch = { drafts ->
                 viewModel.importEntriesBatch(drafts) { showEmailImportDialog = false }
             }
+        )
+    }
+
+    if (showExcelExportDialog && isEffectiveAdmin) {
+        ExcelExportDialog(
+            exportState = excelExportState,
+            onGenerate = { period -> viewModel.generateExcelReport(context, period) },
+            onReset = viewModel::resetExcelExportState,
+            onMessage = viewModel::showMessage,
+            onDismiss = { showExcelExportDialog = false }
         )
     }
 
@@ -501,8 +527,11 @@ private fun EntriesDashboardContent(
     onTimeSlotChange: (TimeSlotFilter) -> Unit,
     onOpenEmailImport: () -> Unit,
     onOpenCreateEntry: () -> Unit,
-    onCheckInNow: (AccessEntry) -> Unit,
+    onOpenExcelExport: () -> Unit,
+    onCheckInNow: (AccessEntry, PlateImageAttachment?) -> Unit,
     onCheckOutNow: (AccessEntry) -> Unit,
+    onAttachPlateImage: (AccessEntry, PlateImageAttachment) -> Unit,
+    onMediaError: (String) -> Unit,
     onEditEntry: (AccessEntry) -> Unit,
     onDeleteEntry: (AccessEntry) -> Unit,
     onRestoreAdminMode: () -> Unit,
@@ -718,41 +747,63 @@ private fun EntriesDashboardContent(
             // Admin quick action bar
             if (isEffectiveAdmin) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OutlinedButton(
-                            onClick = onOpenEmailImport,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("open_email_import_button"),
-                            shape = RoundedCornerShape(12.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.Email,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Importar correo")
+                            OutlinedButton(
+                                onClick = onOpenEmailImport,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("open_email_import_button"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Email,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Importar correo")
+                            }
+                            Button(
+                                onClick = onOpenCreateEntry,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("open_manual_create_button"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Carga manual")
+                            }
                         }
-                        Button(
-                            onClick = onOpenCreateEntry,
+
+                        OutlinedButton(
+                            onClick = onOpenExcelExport,
                             modifier = Modifier
-                                .weight(1f)
+                                .fillMaxWidth()
                                 .height(48.dp)
-                                .testTag("open_manual_create_button"),
+                                .testTag("open_excel_export_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.Add,
+                                imageVector = Icons.Filled.TableView,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Carga manual")
+                            Text("Descargar Excel (24h / 7 días)")
                         }
                     }
                 }
@@ -900,8 +951,10 @@ private fun EntriesDashboardContent(
                                 entry = entry,
                                 isAdminActionsEnabled = isEffectiveAdmin,
                                 isBusy = busyEntryId == entry.id,
-                                onCheckInNow = { onCheckInNow(entry) },
+                                onCheckInNow = { attachment -> onCheckInNow(entry, attachment) },
                                 onCheckOutNow = { onCheckOutNow(entry) },
+                                onAttachPlateImage = { attachment -> onAttachPlateImage(entry, attachment) },
+                                onMediaError = onMediaError,
                                 onEdit = { onEditEntry(entry) },
                                 onDelete = { onDeleteEntry(entry) }
                             )
