@@ -67,7 +67,8 @@ import com.example.util.rememberPlateImagePickerLauncher
 @Composable
 fun EntryCard(
     entry: AccessEntry,
-    isAdminActionsEnabled: Boolean,
+    canEdit: Boolean,
+    canSendToTrash: Boolean,
     isBusy: Boolean,
     isPendingSync: Boolean = false,
     onCheckInNow: (PlateImageAttachment?) -> Unit,
@@ -194,31 +195,36 @@ fun EntryCard(
                     }
                 }
 
-                if (isAdminActionsEnabled) {
+                if (canEdit || canSendToTrash) {
                     Row {
-                        IconButton(
-                            onClick = onEdit,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("edit_entry_${entry.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Edit,
-                                contentDescription = "Editar ingreso",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        if (canEdit) {
+                            IconButton(
+                                onClick = onEdit,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("edit_entry_${entry.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Edit,
+                                    contentDescription = "Editar ingreso",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                        IconButton(
-                            onClick = onDelete,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("delete_entry_${entry.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Delete,
-                                contentDescription = "Eliminar ingreso",
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                        if (canSendToTrash) {
+                            IconButton(
+                                onClick = onDelete,
+                                enabled = !isBusy,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("delete_entry_${entry.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "Enviar a papelera",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
                         }
                     }
                 }

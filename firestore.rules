@@ -42,12 +42,16 @@ service cloud.firestore {
       return isSignedIn() &&
              userDocExists() &&
              userDoc().active == true &&
-             userDoc().role in ['ADMIN', 'OPERATOR'];
+             userDoc().role in ['ADMIN', 'OPERATOR', 'DIAMANTE_ALMA'];
     }
 
     function isAdmin() {
       return isBootstrappedAdmin() ||
              (isActiveStaff() && userDoc().role == 'ADMIN');
+    }
+
+    function isDiamanteAlma() {
+      return isActiveStaff() && userDoc().role == 'DIAMANTE_ALMA';
     }
 
     function userUnitId() {
@@ -59,7 +63,7 @@ service cloud.firestore {
       return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
              data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
-             data.role in ['PENDING', 'ADMIN', 'OPERATOR'] &&
+             data.role in ['PENDING', 'ADMIN', 'OPERATOR', 'DIAMANTE_ALMA'] &&
              data.unitId is string && data.unitId.size() >= 2 && data.unitId.size() <= 64 &&
              data.active is bool &&
              (data.role != 'PENDING' || data.active == false) &&
@@ -104,6 +108,7 @@ service cloud.firestore {
              data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time &&
+             (!('restoredAt' in data) || (data.restoredAt is timestamp && data.restoredAt <= request.time)) &&
              (!('checkInAt' in data) || (data.checkInAt is timestamp && data.checkInAt <= request.time)) &&
              (!('checkInByUid' in data) || (data.checkInByUid is string && data.checkInByUid.size() >= 1 && data.checkInByUid.size() <= 128)) &&
              (!('checkInByName' in data) || (data.checkInByName is string && data.checkInByName.size() >= 1 && data.checkInByName.size() <= 120)) &&
@@ -123,13 +128,20 @@ service cloud.firestore {
              );
     }
 
+    function isValidTrashedEntry(data) {
+      return isValidEntry(data) &&
+             data.deletedAt is timestamp && data.deletedAt <= request.time &&
+             data.deletedByUid is string && data.deletedByUid.size() >= 1 && data.deletedByUid.size() <= 128 &&
+             data.deletedByName is string && data.deletedByName.size() >= 1 && data.deletedByName.size() <= 120;
+    }
+
     // --- Collection: /users/{userId} ---
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if isAdmin();
 
       // Create: New users self-register strictly as PENDING (inactive, no entries access).
-      // Only Bootstrapped Admin can self-register as ADMIN, and only Admin can grant OPERATOR/ADMIN.
+      // Only Bootstrapped Admin can self-register as ADMIN, and only Admin can grant OPERATOR/DIAMANTE_ALMA/ADMIN.
       allow create: if isSignedIn() &&
                        isValidId(userId) &&
                        isValidUserProfile(incoming()) &&
@@ -199,7 +211,7 @@ service cloud.firestore {
                      isActiveStaff() &&
                      existing().unitId == userUnitId();
 
-      // Only active Admins can create new entries
+      // Active Admins & Diamante Alma can create new entries; only Admins can restore from trashedEntries
       allow create: if isSignedIn() &&
                        isValidId(entryId) &&
                        isValidEntry(incoming()) &&
@@ -214,15 +226,22 @@ service cloud.firestore {
                          'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
                          'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
                          'checkOutAt', 'checkOutByUid', 'checkOutByName',
-                         'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+                         'createdByUid', 'createdByName', 'createdAt', 'updatedAt', 'restoredAt'
                        ]) &&
-                       isAdmin() &&
                        incoming().unitId == userUnitId() &&
-                       incoming().createdByUid == request.auth.uid;
+                       (
+                         ((isAdmin() || isDiamanteAlma()) &&
+                          incoming().createdByUid == request.auth.uid &&
+                          !('restoredAt' in incoming())) ||
+                         (isAdmin() &&
+                          exists(/databases/$(database)/documents/trashedEntries/$(entryId)) &&
+                          !existsAfter(/databases/$(database)/documents/trashedEntries/$(entryId)) &&
+                          get(/databases/$(database)/documents/trashedEntries/$(entryId)).data.unitId == incoming().unitId)
+                       );
 
       // Tiered Update:
       // 1. Admin can edit fields or adjust status
-      // 2. Active Operator can check in PENDIENTE -> INGRESO (with optional plate image), check out INGRESO -> SALIDA, or attach plate image
+      // 2. Active staff (OPERATOR / DIAMANTE_ALMA / ADMIN) can check in PENDIENTE -> INGRESO, check out INGRESO -> SALIDA, or attach plate image
       allow update: if isSignedIn() &&
                        isValidId(entryId) &&
                        isValidEntry(incoming()) &&
@@ -261,7 +280,54 @@ service cloud.firestore {
                           ]))
                        );
 
-      // Only active Admins can delete entries; Operators cannot delete history
+      // Soft delete ONLY: Admin or Diamante Alma can delete an active entry only when atomically moving it to /trashedEntries
+      allow delete: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       (isAdmin() || isDiamanteAlma()) &&
+                       existing().unitId == userUnitId() &&
+                       existsAfter(/databases/$(database)/documents/trashedEntries/$(entryId));
+    }
+
+    // --- Collection: /trashedEntries/{entryId} ---
+    // Strict Admin-only visibility, restore, and permanent deletion.
+    // Diamante Alma can ONLY move an existing active /entries doc here via atomic batch.
+    match /trashedEntries/{entryId} {
+      allow get: if isSignedIn() &&
+                    isValidId(entryId) &&
+                    isAdmin() &&
+                    existing().unitId == userUnitId();
+
+      allow list: if isSignedIn() &&
+                     isAdmin() &&
+                     existing().unitId == userUnitId();
+
+      allow create: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       (isAdmin() || isDiamanteAlma()) &&
+                       isValidTrashedEntry(incoming()) &&
+                       incoming().keys().hasAll([
+                         'unitId', 'entryDate', 'fullName', 'documentNumber', 'plate',
+                         'destinationUnit', 'visitorType', 'expectedTime', 'source',
+                         'notes', 'status', 'createdByUid', 'createdByName', 'createdAt', 'updatedAt',
+                         'deletedAt', 'deletedByUid', 'deletedByName'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'unitId', 'entryDate', 'rank', 'fullName', 'documentNumber', 'plate',
+                         'plateImageName', 'plateImageData',
+                         'destinationUnit', 'reason', 'visitorType', 'expectedTime', 'source',
+                         'notes', 'status', 'checkInAt', 'checkInByUid', 'checkInByName',
+                         'checkOutAt', 'checkOutByUid', 'checkOutByName',
+                         'createdByUid', 'createdByName', 'createdAt', 'updatedAt', 'restoredAt',
+                         'deletedAt', 'deletedByUid', 'deletedByName'
+                       ]) &&
+                       incoming().unitId == userUnitId() &&
+                       incoming().deletedByUid == request.auth.uid &&
+                       exists(/databases/$(database)/documents/entries/$(entryId)) &&
+                       !existsAfter(/databases/$(database)/documents/entries/$(entryId)) &&
+                       get(/databases/$(database)/documents/entries/$(entryId)).data.unitId == userUnitId();
+
+      allow update: if false;
+
       allow delete: if isSignedIn() &&
                        isValidId(entryId) &&
                        isAdmin() &&

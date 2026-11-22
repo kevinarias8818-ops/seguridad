@@ -34,7 +34,7 @@ object FcmTokenManager {
         unitId: String,
         role: UserRole
     ) {
-        if (role == UserRole.PENDING) {
+        if (role == UserRole.PENDING || role == UserRole.DIAMANTE_ALMA) {
             unregisterAllPushTopics(unitId)
             return
         }
@@ -53,7 +53,7 @@ object FcmTokenManager {
                     Firebase.messaging.subscribeToTopic(operatorTopicForUnit(unitId)).await()
                     Firebase.messaging.unsubscribeFromTopic(adminTopicForUnit(unitId)).await()
                 }
-                UserRole.PENDING -> Unit
+                UserRole.PENDING, UserRole.DIAMANTE_ALMA -> Unit
             }
         } catch (e: Exception) {
             Log.w(TAG, "No se pudo sincronizar token FCM: ${e.message}")

@@ -16,12 +16,14 @@ import {
   Edit3,
   Eye,
   FileSpreadsheet,
+  Gem,
   Image as ImageIcon,
   LogIn,
   LogOut,
   Mail,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Shield,
   ShieldAlert,
@@ -37,21 +39,32 @@ import {
   attachPlateImage,
   compressPlateImageFile,
   createEntry,
-  deleteEntry,
+  currentTimeHm,
   ensureUserProfile,
   fetchAllEntriesForUnit,
+  findActiveOnSiteDuplicates,
   formatDateTimeShort,
+  formatDocumentNumberInput,
+  formatEntryTimeDigits,
+  formatPlateInput,
   formatTimeHm,
   getEntryHour,
   humanizeFirebaseError,
   importEntriesBatch,
   isSafePlateImageDataUrl,
+  isValidEntryTime,
   isValidIsoDate,
   isWebOnline,
   markCheckInNow,
   markCheckOutNow,
+  moveEntryToTrash,
+  normalizeExistingTime,
+  permanentlyDeleteFromTrash,
+  restoreEntryFromTrash,
   subscribeAllUsers,
   subscribeEntries,
+  subscribeOnSiteEntries,
+  subscribeTrashedEntries,
   subscribeUserProfile,
   todayIsoDate,
   updateEntry,
@@ -102,7 +115,10 @@ export default function App() {
 
   const [isOnline, setIsOnline] = useState(() => isWebOnline());
   const [entries, setEntries] = useState([]);
+  const [onSiteEntries, setOnSiteEntries] = useState([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
+  const [trashedEntries, setTrashedEntries] = useState([]);
+  const [trashedLoading, setTrashedLoading] = useState(false);
   const [isFromCache, setIsFromCache] = useState(false);
   const [pendingSyncIds, setPendingSyncIds] = useState(() => new Set());
   const [users, setUsers] = useState([]);
@@ -189,6 +205,7 @@ export default function App() {
         setProfileReadyUid('');
         setProfile(null);
         setEntries([]);
+        setTrashedEntries([]);
         setUsers([]);
         setSimulateOperator(false);
         return;
@@ -228,11 +245,16 @@ export default function App() {
   }, [authUser, profileReadyUid]);
 
   const isRealAdmin = profile?.role === 'ADMIN' && profile?.active === true;
-  const isStaffActive =
-    profile?.active === true && (profile?.role === 'ADMIN' || profile?.role === 'OPERATOR');
   const effectiveIsAdmin = isRealAdmin && !simulateOperator;
+  const isActiveDiamanteAlma = profile?.active === true && profile?.role === 'DIAMANTE_ALMA';
+  const isStaffActive =
+    profile?.active === true &&
+    ['ADMIN', 'OPERATOR', 'DIAMANTE_ALMA'].includes(profile?.role);
+  const canCreateEntries = effectiveIsAdmin || isActiveDiamanteAlma;
+  const canSendToTrash = effectiveIsAdmin || isActiveDiamanteAlma;
+  const canUseFullHistory = effectiveIsAdmin || isActiveDiamanteAlma;
 
-  // 3. Real-time entries subscription (strictly gated behind active ADMIN or OPERATOR)
+  // 3. Real-time entries subscription (strictly gated behind active staff)
   useEffect(() => {
     if (!isStaffActive) {
       setEntries([]);
@@ -241,7 +263,7 @@ export default function App() {
       return undefined;
     }
     setEntriesLoading(true);
-    const scopeDate = effectiveIsAdmin && dateScope === 'HISTORIAL' ? null : todayIsoDate();
+    const scopeDate = canUseFullHistory && dateScope === 'HISTORIAL' ? null : todayIsoDate();
     const unsub = subscribeEntries(
       profile.unitId || UNIT_ID,
       scopeDate,
@@ -257,12 +279,49 @@ export default function App() {
       }
     );
     return () => unsub();
-  }, [isStaffActive, effectiveIsAdmin, dateScope, profile?.unitId]);
+  }, [isStaffActive, canUseFullHistory, dateScope, profile?.unitId]);
 
-  // 4. Real-time users subscription (Admin only)
   useEffect(() => {
-    if (!isRealAdmin) {
+    if (!canCreateEntries) {
+      setOnSiteEntries([]);
+      return undefined;
+    }
+    const unsub = subscribeOnSiteEntries(
+      profile?.unitId || UNIT_ID,
+      (items) => setOnSiteEntries(items),
+      () => setOnSiteEntries([])
+    );
+    return () => unsub();
+  }, [canCreateEntries, profile?.unitId]);
+
+  // 4. Real-time trash subscription (strictly Admin-only; blocked visually & logically for all other roles)
+  useEffect(() => {
+    if (!effectiveIsAdmin) {
+      setTrashedEntries([]);
+      setTrashedLoading(false);
+      if (activeTab === 'PAPELERA') setActiveTab('INGRESOS');
+      return undefined;
+    }
+    setTrashedLoading(true);
+    const unsub = subscribeTrashedEntries(
+      profile.unitId || UNIT_ID,
+      (items) => {
+        setTrashedEntries(items);
+        setTrashedLoading(false);
+      },
+      (err) => {
+        setErrorMsg(humanizeFirebaseError(err));
+        setTrashedLoading(false);
+      }
+    );
+    return () => unsub();
+  }, [effectiveIsAdmin, profile?.unitId, activeTab]);
+
+  // 5. Real-time users subscription (strictly Admin-only)
+  useEffect(() => {
+    if (!effectiveIsAdmin) {
       setUsers([]);
+      if (activeTab === 'USUARIOS') setActiveTab('INGRESOS');
       return undefined;
     }
     const unsub = subscribeAllUsers(
@@ -270,7 +329,7 @@ export default function App() {
       (err) => setErrorMsg(humanizeFirebaseError(err))
     );
     return () => unsub();
-  }, [isRealAdmin]);
+  }, [effectiveIsAdmin, activeTab]);
 
   async function handleGoogleSignIn() {
     setAuthBusy(true);
@@ -372,16 +431,75 @@ export default function App() {
     }
   }
 
-  async function handleDeleteEntry(entry) {
-    if (!window.confirm(`¿Eliminar el registro de ${entry.fullName}?`)) return;
+  async function handleMoveToTrash(entry) {
+    if (!canSendToTrash || !profile) {
+      setErrorMsg('No tienes permiso para enviar ingresos a la papelera.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `¿Enviar el ingreso de ${entry.fullName} a la papelera? Dejará de mostrarse en los ingresos y contadores.`
+      )
+    ) {
+      return;
+    }
     setBusyId(entry.id);
     setErrorMsg('');
     try {
-      const res = await deleteEntry(entry.id);
+      const res = await moveEntryToTrash(entry, profile);
       showToast(
         res?.queuedOffline
-          ? 'Eliminación en cola offline. Se aplicará al volver el internet.'
-          : 'Registro eliminado'
+          ? `Envío a papelera guardado offline (${entry.fullName}).`
+          : `Ingreso enviado a la papelera: ${entry.fullName}`
+      );
+    } catch (err) {
+      setErrorMsg(humanizeFirebaseError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  async function handleRestoreFromTrash(trashedItem) {
+    if (!effectiveIsAdmin || !profile) {
+      setErrorMsg('Solo el Administrador puede restaurar registros de la papelera.');
+      return;
+    }
+    setBusyId(trashedItem.id);
+    setErrorMsg('');
+    try {
+      const res = await restoreEntryFromTrash(trashedItem, profile);
+      showToast(
+        res?.queuedOffline
+          ? `Restauración guardada offline (${trashedItem.fullName}).`
+          : `Ingreso restaurado: ${trashedItem.fullName}`
+      );
+    } catch (err) {
+      setErrorMsg(humanizeFirebaseError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  async function handlePermanentDeleteFromTrash(trashedItem) {
+    if (!effectiveIsAdmin || !profile) {
+      setErrorMsg('Solo el Administrador puede eliminar definitivamente de la papelera.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `¿Eliminar definitivamente el registro de ${trashedItem.fullName}? Esta acción no se puede deshacer.`
+      )
+    ) {
+      return;
+    }
+    setBusyId(trashedItem.id);
+    setErrorMsg('');
+    try {
+      const res = await permanentlyDeleteFromTrash(trashedItem.id);
+      showToast(
+        res?.queuedOffline
+          ? 'Eliminación definitiva en cola offline.'
+          : 'Registro eliminado definitivamente de la papelera'
       );
     } catch (err) {
       setErrorMsg(humanizeFirebaseError(err));
@@ -391,6 +509,10 @@ export default function App() {
   }
 
   async function handleRoleChange(targetUser, role, active) {
+    if (!effectiveIsAdmin) {
+      setErrorMsg('Solo el Administrador puede gestionar roles.');
+      return;
+    }
     setBusyId(targetUser.userId);
     setErrorMsg('');
     try {
@@ -585,7 +707,7 @@ export default function App() {
           </h1>
           <p className="auth-desc">
             {isPending
-              ? 'Tu sesión está activa, pero aún no tienes permiso para ver los ingresos de la unidad. Solicita al Administrador que te asigne el rol de Operador.'
+              ? 'Tu sesión está activa, pero aún no tienes permiso para ver los ingresos de la unidad. Solicita al Administrador que te asigne un rol autorizado (Operador o Diamante Alma).'
               : 'Tu acceso como personal autorizado está actualmente suspendido. Contacta al Administrador.'}
           </p>
 
@@ -651,8 +773,22 @@ export default function App() {
                 OFFLINE
               </span>
             )}
-            <span className={`pill ${effectiveIsAdmin ? 'pill-admin' : 'pill-operator'}`}>
-              {effectiveIsAdmin ? 'ADMIN' : simulateOperator ? 'VISTA OPERADOR' : 'OPERADOR'}
+            <span
+              className={`pill ${
+                effectiveIsAdmin
+                  ? 'pill-admin'
+                  : isActiveDiamanteAlma
+                  ? 'pill-diamante'
+                  : 'pill-operator'
+              }`}
+            >
+              {effectiveIsAdmin
+                ? 'ADMIN'
+                : simulateOperator
+                ? 'VISTA OPERADOR'
+                : isActiveDiamanteAlma
+                ? 'DIAMANTE ALMA'
+                : 'OPERADOR'}
             </span>
 
             {isRealAdmin && (
@@ -721,7 +857,7 @@ export default function App() {
           </div>
         )}
 
-        {isRealAdmin && !simulateOperator && (
+        {effectiveIsAdmin && (
           <div className="nav-tabs" role="tablist">
             <button
               type="button"
@@ -732,6 +868,16 @@ export default function App() {
             >
               <Clock size={17} />
               Ingresos ({entries.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'PAPELERA'}
+              className={`tab-btn ${activeTab === 'PAPELERA' ? 'active' : ''}`}
+              onClick={() => setActiveTab('PAPELERA')}
+            >
+              <Trash2 size={17} />
+              Papelera ({trashedEntries.length})
             </button>
             <button
               type="button"
@@ -752,57 +898,91 @@ export default function App() {
         {activeTab === 'INGRESOS' ? (
           <>
             <section className="kpi-grid" aria-label="Resumen de turno">
-              <div className="kpi-card kpi-pending">
+              <button
+                type="button"
+                className={`kpi-card kpi-pending is-clickable ${
+                  statusFilter === 'PENDIENTE' ? 'is-selected' : ''
+                }`}
+                onClick={() =>
+                  setStatusFilter((prev) => (prev === 'PENDIENTE' ? 'TODOS' : 'PENDIENTE'))
+                }
+              >
                 <div className="kpi-label">Pendientes</div>
                 <div className="kpi-value">{pendingCount}</div>
-              </div>
-              <div className="kpi-card kpi-ingreso">
+              </button>
+              <button
+                type="button"
+                className={`kpi-card kpi-ingreso is-clickable ${
+                  statusFilter === 'INGRESO' ? 'is-selected' : ''
+                }`}
+                onClick={() =>
+                  setStatusFilter((prev) => (prev === 'INGRESO' ? 'TODOS' : 'INGRESO'))
+                }
+              >
                 <div className="kpi-label">En sitio</div>
                 <div className="kpi-value">{enteredCount}</div>
-              </div>
-              <div className="kpi-card kpi-salida">
+              </button>
+              <button
+                type="button"
+                className={`kpi-card kpi-salida is-clickable ${
+                  statusFilter === 'SALIDA' ? 'is-selected' : ''
+                }`}
+                onClick={() =>
+                  setStatusFilter((prev) => (prev === 'SALIDA' ? 'TODOS' : 'SALIDA'))
+                }
+              >
                 <div className="kpi-label">Salieron</div>
                 <div className="kpi-value">{exitedCount}</div>
-              </div>
-              <div className="kpi-card">
+              </button>
+              <button
+                type="button"
+                className={`kpi-card is-clickable ${statusFilter === 'TODOS' ? 'is-selected' : ''}`}
+                onClick={() => setStatusFilter('TODOS')}
+              >
                 <div className="kpi-label">
-                  {effectiveIsAdmin && dateScope === 'HISTORIAL' ? 'Historial' : 'Hoy'}
+                  {canUseFullHistory && dateScope === 'HISTORIAL' ? 'Historial' : 'Hoy'}
                 </div>
                 <div className="kpi-value">{entries.length}</div>
-              </div>
+              </button>
             </section>
 
-            {effectiveIsAdmin && (
+            {(canCreateEntries || effectiveIsAdmin) && (
               <div className="action-bar">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() =>
-                    setEditorEntry({
-                      mode: 'create',
-                      item: { ...EMPTY_DRAFT, entryDate: todayIsoDate() },
-                    })
-                  }
-                >
-                  <Plus size={18} />
-                  Nuevo ingreso
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => setShowImportModal(true)}
-                >
-                  <Mail size={18} />
-                  Importar correo institucional
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => setShowExcelModal(true)}
-                >
-                  <FileSpreadsheet size={18} />
-                  Descargar Excel (24h / 7 días)
-                </button>
+                {canCreateEntries && (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() =>
+                        setEditorEntry({
+                          mode: 'create',
+                          item: { ...EMPTY_DRAFT, entryDate: todayIsoDate() },
+                        })
+                      }
+                    >
+                      <Plus size={18} />
+                      Nuevo ingreso
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={() => setShowImportModal(true)}
+                    >
+                      <Mail size={18} />
+                      Importar correo institucional
+                    </button>
+                  </>
+                )}
+                {effectiveIsAdmin && (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => setShowExcelModal(true)}
+                  >
+                    <FileSpreadsheet size={18} />
+                    Descargar Excel (24h / 7 días)
+                  </button>
+                )}
               </div>
             )}
 
@@ -824,23 +1004,26 @@ export default function App() {
                 <div className="chip-group" role="group" aria-label="Filtro por estado">
                   {[
                     { id: 'TODOS', label: 'Todos' },
+                    { id: 'INGRESO', label: `En sitio (${enteredCount})`, onSite: true },
                     { id: 'PENDIENTE', label: 'Pendiente por ingresar' },
-                    { id: 'INGRESO', label: 'Ya ingresó' },
                     { id: 'SALIDA', label: 'Ya salió' },
                   ].map((f) => (
                     <button
                       key={f.id}
                       type="button"
-                      className={`chip ${statusFilter === f.id ? 'active' : ''}`}
+                      className={`chip ${f.onSite ? 'chip-onsite' : ''} ${
+                        statusFilter === f.id ? 'active' : ''
+                      }`}
                       onClick={() => setStatusFilter(f.id)}
                     >
+                      {f.onSite && <CheckCircle2 size={14} />}
                       {f.label}
                     </button>
                   ))}
                 </div>
 
                 <div className="chip-group">
-                  {effectiveIsAdmin && (
+                  {canUseFullHistory && (
                     <>
                       <button
                         type="button"
@@ -883,9 +1066,9 @@ export default function App() {
                   No hay ingresos que coincidan con el filtro actual.
                 </p>
                 <p style={{ margin: '6px 0 0', fontSize: '0.88rem' }}>
-                  {effectiveIsAdmin
+                  {canCreateEntries
                     ? 'Usa "Nuevo ingreso" o "Importar correo institucional" para cargar registros.'
-                    : 'Los registros cargados por el Administrador aparecerán aquí automáticamente.'}
+                    : 'Los registros cargados aparecerán aquí automáticamente.'}
                 </p>
               </div>
             ) : (
@@ -1094,31 +1277,36 @@ export default function App() {
                         );
                       })()}
 
-                      {effectiveIsAdmin && (
+                      {(effectiveIsAdmin || canSendToTrash) && (
                         <div className="entry-footer-actions">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline"
-                            style={{ flex: 1 }}
-                            onClick={() =>
-                              setEditorEntry({
-                                mode: 'edit',
-                                item: { ...entry },
-                              })
-                            }
-                          >
-                            <Edit3 size={15} />
-                            Editar
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger-outline"
-                            disabled={isBusy}
-                            onClick={() => handleDeleteEntry(entry)}
-                          >
-                            <Trash2 size={15} />
-                            Eliminar
-                          </button>
+                          {effectiveIsAdmin && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline"
+                              style={{ flex: 1 }}
+                              onClick={() =>
+                                setEditorEntry({
+                                  mode: 'edit',
+                                  item: { ...entry },
+                                })
+                              }
+                            >
+                              <Edit3 size={15} />
+                              Editar
+                            </button>
+                          )}
+                          {canSendToTrash && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger-outline"
+                              style={!effectiveIsAdmin ? { flex: 1 } : undefined}
+                              disabled={isBusy}
+                              onClick={() => handleMoveToTrash(entry)}
+                            >
+                              <Trash2 size={15} />
+                              Enviar a papelera
+                            </button>
+                          )}
                         </div>
                       )}
                     </article>
@@ -1127,46 +1315,60 @@ export default function App() {
               </section>
             )}
           </>
-        ) : (
+        ) : activeTab === 'PAPELERA' && effectiveIsAdmin ? (
+          <TrashEntriesSection
+            items={trashedEntries}
+            loading={trashedLoading}
+            busyId={busyId}
+            onRestore={handleRestoreFromTrash}
+            onPermanentDelete={handlePermanentDeleteFromTrash}
+          />
+        ) : effectiveIsAdmin ? (
           <UsersManagementSection
             users={users}
             currentUid={profile.userId}
             busyId={busyId}
             onChangeRole={handleRoleChange}
           />
-        )}
+        ) : null}
       </main>
 
-      {editorEntry && (
-        <EntryEditorModal
-          mode={editorEntry.mode}
-          initialData={editorEntry.item}
-          onClose={() => setEditorEntry(null)}
-          onSave={async (formValues) => {
-            if (editorEntry.mode === 'create') {
-              const res = await createEntry(formValues, profile);
-              showToast(
-                res?.queuedOffline
-                  ? 'Ingreso guardado offline. Se sincronizará al volver el internet.'
-                  : 'Ingreso creado'
-              );
-            } else {
-              const res = await updateEntry(editorEntry.item, formValues, profile);
-              showToast(
-                res?.queuedOffline
-                  ? 'Actualización guardada offline. Se sincronizará al volver el internet.'
-                  : 'Ingreso actualizado'
-              );
-            }
-            setEditorEntry(null);
-          }}
-        />
-      )}
+      {editorEntry &&
+        ((editorEntry.mode === 'create' && canCreateEntries) ||
+          (editorEntry.mode === 'edit' && effectiveIsAdmin)) && (
+          <EntryEditorModal
+            mode={editorEntry.mode}
+            initialData={editorEntry.item}
+            activeOnSiteEntries={onSiteEntries}
+            onClose={() => setEditorEntry(null)}
+            onSave={async (formValues) => {
+              if (editorEntry.mode === 'create') {
+                if (!canCreateEntries) throw new Error('Permisos insuficientes.');
+                const res = await createEntry(formValues, profile);
+                showToast(
+                  res?.queuedOffline
+                    ? 'Ingreso guardado offline. Se sincronizará al volver el internet.'
+                    : 'Ingreso creado'
+                );
+              } else {
+                if (!effectiveIsAdmin) throw new Error('Solo el Administrador puede editar.');
+                const res = await updateEntry(editorEntry.item, formValues, profile);
+                showToast(
+                  res?.queuedOffline
+                    ? 'Actualización guardada offline. Se sincronizará al volver el internet.'
+                    : 'Ingreso actualizado'
+                );
+              }
+              setEditorEntry(null);
+            }}
+          />
+        )}
 
-      {showImportModal && (
+      {showImportModal && canCreateEntries && (
         <EmailImportModal
           onClose={() => setShowImportModal(false)}
           onImport={async (drafts) => {
+            if (!canCreateEntries) throw new Error('Permisos insuficientes.');
             const res = await importEntriesBatch(drafts, profile);
             showToast(
               res?.queuedOffline
@@ -1444,12 +1646,134 @@ function PlateImagePreview({ fileName, dataUrl, subtitle, onZoom, onRemove }) {
   );
 }
 
+function TrashEntriesSection({ items, loading, busyId, onRestore, onPermanentDelete }) {
+  const [search, setSearch] = useState('');
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((item) =>
+      [
+        item.rank,
+        item.fullName,
+        item.documentNumber,
+        item.plate,
+        item.destinationUnit,
+        item.deletedByName,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [items, search]);
+
+  return (
+    <section aria-label="Papelera de ingresos">
+      <div className="info-banner" style={{ borderColor: 'var(--danger-border)', background: 'var(--danger-soft)', color: '#fecaca' }}>
+        <strong>Papelera exclusiva de Administrador:</strong> Los ingresos eliminados aquí no aparecen en la lista principal, contadores ni reportes Excel. Puedes restaurarlos o eliminarlos definitivamente.
+      </div>
+
+      <div className="controls-panel">
+        <div className="search-box">
+          <Search size={18} className="search-icon" />
+          <input
+            type="search"
+            className="input search-input"
+            placeholder="Buscar en papelera por nombre, cédula, placa o quién lo eliminó..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="empty-state">Cargando papelera en tiempo real...</div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state">
+          <p style={{ margin: 0, fontWeight: 700, color: '#e2e8f0' }}>
+            {items.length === 0 ? 'La papelera está vacía' : 'Sin coincidencias en la papelera'}
+          </p>
+          <p style={{ margin: '6px 0 0', fontSize: '0.88rem' }}>
+            {items.length === 0
+              ? 'Cuando un Administrador o Diamante Alma envíe un ingreso a la papelera aparecerá aquí con fecha y responsable.'
+              : 'Prueba con otro criterio de búsqueda.'}
+          </p>
+        </div>
+      ) : (
+        <div className="entries-grid">
+          {filtered.map((item) => {
+            const isBusy = busyId === item.id;
+            return (
+              <article key={item.id} className="entry-card" style={{ borderLeft: '5px solid var(--danger)' }}>
+                <div className="entry-top">
+                  <span className="pill pill-neutral">Estado previo: {item.status}</span>
+                  <span className="pill pill-neutral">{item.entryDate}</span>
+                </div>
+
+                <div>
+                  <h3 className="entry-name">
+                    {item.rank && <span className="entry-rank">{item.rank}</span>}
+                    {item.fullName}
+                  </h3>
+                  <div className="time-col-sub">
+                    C.C. {item.documentNumber || 'S/D'} · {item.plate || 'Peatonal'}
+                  </div>
+                </div>
+
+                <div className="meta-box">
+                  <div className="meta-label">Dependencia / Unidad destino</div>
+                  <div className="meta-val">{item.destinationUnit}</div>
+                </div>
+
+                <div className="error-banner" style={{ marginBottom: 0 }}>
+                  <Trash2 size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <div>
+                      <strong>Eliminado por:</strong> {item.deletedByName || 'Usuario autorizado'}
+                    </div>
+                    <div className="time-col-sub" style={{ color: '#fecaca', marginTop: 2 }}>
+                      Fecha de eliminación: {formatDateTimeShort(item.deletedAt)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="entry-footer-actions">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    style={{ flex: 1, background: 'var(--emerald-strong)', borderColor: '#34d399' }}
+                    disabled={isBusy}
+                    onClick={() => onRestore(item)}
+                  >
+                    <RotateCcw size={15} />
+                    Restaurar
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger-outline"
+                    style={{ flex: 1 }}
+                    disabled={isBusy}
+                    onClick={() => onPermanentDelete(item)}
+                  >
+                    <Trash2 size={15} />
+                    Eliminar definitivo
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function UsersManagementSection({ users, currentUid, busyId, onChangeRole }) {
   return (
     <section aria-label="Gestión de usuarios y roles">
       <div className="info-banner">
-        <strong>Control estricto de permisos:</strong> Ningún usuario recibe rol de Operador al
-        registrarse. Solo tú como Administrador puedes autorizar o suspender cuentas.
+        <strong>Control estricto de permisos:</strong> Ningún usuario recibe rol al registrarse.
+        Solo tú como Administrador puedes asignar Operador, Diamante Alma (registra ingresos y envía
+        a papelera) o Administrador, o suspender cuentas.
       </div>
 
       {users.length === 0 ? (
@@ -1472,12 +1796,14 @@ function UsersManagementSection({ users, currentUid, busyId, onChangeRole }) {
                     className={`pill ${
                       u.role === 'ADMIN'
                         ? 'pill-admin'
+                        : u.role === 'DIAMANTE_ALMA'
+                        ? 'pill-diamante'
                         : u.role === 'OPERATOR'
                         ? 'pill-operator'
                         : 'pill-pending'
                     }`}
                   >
-                    {u.role}
+                    {u.role === 'DIAMANTE_ALMA' ? 'Diamante Alma' : u.role}
                   </span>
                 </div>
 
@@ -1497,7 +1823,18 @@ function UsersManagementSection({ users, currentUid, busyId, onChangeRole }) {
                       onClick={() => onChangeRole(u, 'OPERATOR', true)}
                     >
                       <UserCheck size={15} />
-                      Dar rol Operador
+                      Operador
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline"
+                      style={{ flex: 1 }}
+                      disabled={isBusy || (u.role === 'DIAMANTE_ALMA' && u.active)}
+                      onClick={() => onChangeRole(u, 'DIAMANTE_ALMA', true)}
+                    >
+                      <Gem size={15} />
+                      Diamante Alma
                     </button>
 
                     <button
@@ -1535,25 +1872,37 @@ function UsersManagementSection({ users, currentUid, busyId, onChangeRole }) {
   );
 }
 
-function EntryEditorModal({ mode, initialData, onClose, onSave }) {
+function EntryEditorModal({ mode, initialData, activeOnSiteEntries = [], onClose, onSave }) {
   const [form, setForm] = useState({
     entryDate: initialData.entryDate || todayIsoDate(),
     rank: initialData.rank || '',
     fullName: initialData.fullName || '',
     documentNumber: initialData.documentNumber || '',
-    plate: initialData.plate || '',
+    plate: formatPlateInput(initialData.plate || ''),
     plateImageName: initialData.plateImageName || '',
     plateImageData: initialData.plateImageData || '',
     destinationUnit: initialData.destinationUnit || '',
     reason: initialData.reason || '',
     visitorType: initialData.visitorType || 'VISITANTE',
-    expectedTime: initialData.expectedTime || '',
+    expectedTime: normalizeExistingTime(initialData.expectedTime || ''),
     notes: initialData.notes || '',
     status: initialData.status || 'PENDIENTE',
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [duplicateConfirmed, setDuplicateConfirmed] = useState(false);
   const [zoomPhoto, setZoomPhoto] = useState(false);
+
+  const duplicateMatches = useMemo(
+    () =>
+      findActiveOnSiteDuplicates(
+        activeOnSiteEntries,
+        form.documentNumber,
+        form.plate,
+        initialData.id || null
+      ),
+    [activeOnSiteEntries, form.documentNumber, form.plate, initialData.id]
+  );
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -1563,7 +1912,7 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
       return;
     }
     if (!form.documentNumber.trim()) {
-      setErr('Ingresa el número de cédula o documento.');
+      setErr('Ingresa el número de cédula (solo números).');
       return;
     }
     if (!form.destinationUnit.trim()) {
@@ -1574,9 +1923,24 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
       setErr('Selecciona una fecha válida (YYYY-MM-DD).');
       return;
     }
+    if (!isValidEntryTime(form.expectedTime)) {
+      setErr('La hora debe tener formato 24h HH:MM (ej. 08:30).');
+      return;
+    }
+    if (mode === 'create' && duplicateMatches.length > 0 && !duplicateConfirmed) {
+      setDuplicateConfirmed(true);
+      setErr(
+        'Advertencia: ya existe un ingreso "En sitio" con esa cédula o placa. Verifica o presiona "Registrar de todos modos".'
+      );
+      return;
+    }
     setSaving(true);
     try {
-      await onSave(form);
+      await onSave({
+        ...form,
+        plate: formatPlateInput(form.plate),
+        expectedTime: form.expectedTime.trim(),
+      });
     } catch (error) {
       setErr(humanizeFirebaseError(error));
       setSaving(false);
@@ -1629,25 +1993,37 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
             </div>
 
             <div className="form-field">
-              <label className="form-label">Cédula / Documento *</label>
+              <label className="form-label">Cédula / Documento * (solo números)</label>
               <input
                 className="input mono"
-                maxLength={40}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={20}
                 placeholder="Ej. 1020458912"
                 value={form.documentNumber}
-                onChange={(e) => setForm({ ...form, documentNumber: e.target.value })}
+                onChange={(e) => {
+                  setDuplicateConfirmed(false);
+                  setErr('');
+                  setForm({ ...form, documentNumber: formatDocumentNumberInput(e.target.value) });
+                }}
               />
             </div>
 
             <div className="form-field">
-              <label className="form-label">Placa y foto (opcional)</label>
+              <label className="form-label">Placa (auto-mayúsculas) y foto</label>
               <div className="plate-input-row">
                 <input
                   className="input mono"
-                  maxLength={20}
-                  placeholder="Ej. KLM-482"
+                  autoCapitalize="characters"
+                  maxLength={10}
+                  placeholder="Ej. ABC123"
+                  style={{ textTransform: 'uppercase' }}
                   value={form.plate}
-                  onChange={(e) => setForm({ ...form, plate: e.target.value.toUpperCase() })}
+                  onChange={(e) => {
+                    setDuplicateConfirmed(false);
+                    setErr('');
+                    setForm({ ...form, plate: formatPlateInput(e.target.value) });
+                  }}
                 />
                 <PlateImageAttachTrigger
                   disabled={saving}
@@ -1664,6 +2040,31 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
                 />
               </div>
             </div>
+
+            {duplicateMatches.length > 0 && (
+              <div className="form-field full">
+                <div className="warning-banner" style={{ marginBottom: 0 }} role="status">
+                  <AlertCircle size={18} style={{ flexShrink: 0, marginTop: 2, color: '#fbbf24' }} />
+                  <div>
+                    <strong>Posible duplicado: ya figura &quot;En sitio&quot;</strong>
+                    {duplicateMatches.slice(0, 2).map(({ entry, matchedByDocument, matchedByPlate }) => {
+                      const reasons = [
+                        matchedByDocument ? `C.C. ${entry.documentNumber}` : '',
+                        matchedByPlate ? `Placa ${entry.plate}` : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' y ');
+                      return (
+                        <div key={entry.id} style={{ marginTop: 3 }}>
+                          {entry.rank ? `${entry.rank} ` : ''}
+                          {entry.fullName} ({reasons}) ingresó a {entry.destinationUnit} y aún no marca salida.
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {isSafePlateImageDataUrl(form.plateImageData) && (
               <div className="form-field full">
@@ -1731,14 +2132,34 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
             </div>
 
             <div className="form-field">
-              <label className="form-label">Hora programada</label>
-              <input
-                className="input mono"
-                maxLength={20}
-                placeholder="Ej. 08:30"
-                value={form.expectedTime}
-                onChange={(e) => setForm({ ...form, expectedTime: e.target.value })}
-              />
+              <label className="form-label">Hora de ingreso (auto-números 24h)</label>
+              <div className="plate-input-row">
+                <input
+                  className="input mono"
+                  inputMode="numeric"
+                  maxLength={5}
+                  placeholder="08:30"
+                  value={form.expectedTime}
+                  onChange={(e) => {
+                    setErr('');
+                    setForm((prev) => ({
+                      ...prev,
+                      expectedTime: formatEntryTimeDigits(prev.expectedTime, e.target.value),
+                    }));
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline"
+                  style={{ minHeight: 48 }}
+                  onClick={() => {
+                    setErr('');
+                    setForm((prev) => ({ ...prev, expectedTime: currentTimeHm() }));
+                  }}
+                >
+                  Ahora
+                </button>
+              </div>
             </div>
 
             {mode === 'edit' && (
@@ -1774,7 +2195,13 @@ function EntryEditorModal({ mode, initialData, onClose, onSave }) {
               Cancelar
             </button>
             <button type="submit" className="btn btn-primary" disabled={saving}>
-              {saving ? 'Guardando...' : mode === 'create' ? 'Guardar ingreso' : 'Actualizar'}
+              {saving
+                ? 'Guardando...'
+                : mode === 'create'
+                ? duplicateMatches.length > 0 && duplicateConfirmed
+                  ? 'Registrar de todos modos'
+                  : 'Guardar ingreso'
+                : 'Actualizar'}
             </button>
           </div>
         </form>

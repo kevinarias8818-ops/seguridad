@@ -6,6 +6,7 @@ import com.example.model.BOOTSTRAPPED_ADMIN_EMAIL
 import com.example.model.DEFAULT_UNIT_ID
 import com.example.model.EntryDraft
 import com.example.model.EntryStatus
+import com.example.model.TrashedEntry
 import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.google.android.gms.tasks.Task
@@ -189,6 +190,7 @@ class AccessRepository(
                     ).sortedWith(
                         compareBy<UserProfile> { it.parsedRole != UserRole.PENDING }
                             .thenBy { it.parsedRole != UserRole.ADMIN }
+                            .thenBy { it.parsedRole != UserRole.DIAMANTE_ALMA }
                             .thenBy { it.displayName.lowercase() }
                     )
                 }
@@ -639,12 +641,113 @@ class AccessRepository(
         else -> 3
     }
 
-    suspend fun deleteEntry(entryId: String): Result<WriteOutcome> {
-        val docPath = "entries/$entryId"
+    fun observeTrashedEntries(
+        currentUid: String,
+        unitId: String
+    ): Flow<List<TrashedEntry>> = flow {
+        require(currentUid.isNotBlank())
+        val path = "trashedEntries"
+        val safeUnitId = unitId.trim().ifBlank { DEFAULT_UNIT_ID }
+        emitAll(
+            db.collection("trashedEntries")
+                .whereEqualTo("unitId", safeUnitId)
+                .snapshots(MetadataChanges.INCLUDE)
+                .map { snapshot ->
+                    snapshot.documents.mapNotNull { doc ->
+                        doc.toObject(
+                            TrashedEntry::class.java,
+                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                        )
+                    }.sortedByDescending { it.deletedAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exceptionToLog = firestoreError ?: (error as? Exception)
+                    if (exceptionToLog != null && auth.currentUser?.uid == currentUid) {
+                        handleFirestoreError(exceptionToLog, OperationType.LIST, path)
+                    }
+                    throw error
+                }
+        )
+    }
+
+    suspend fun moveEntryToTrash(
+        entry: AccessEntry,
+        actorUid: String,
+        actorName: String
+    ): Result<WriteOutcome> {
+        val docPath = "trashedEntries/${entry.id}"
+        return try {
+            val uid = requireUserId()
+            check(uid == actorUid) { "La sesión cambió; reintente." }
+            require(entry.id.isNotBlank()) { "ID de registro inválido." }
+            val safeActorName = actorName.trim().take(120).ifBlank { "Usuario autorizado" }
+
+            val trashedPayload = buildTrashedPayload(
+                entry = entry,
+                deletedByUid = uid,
+                deletedByName = safeActorName
+            )
+
+            val batch = db.batch()
+            val entryRef = db.collection("entries").document(entry.id)
+            val trashRef = db.collection("trashedEntries").document(entry.id)
+            batch.set(trashRef, trashedPayload)
+            batch.delete(entryRef)
+
+            val outcome = batch.commit().awaitWriteQueued()
+            Result.success(outcome)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun restoreEntryFromTrash(
+        trashedEntry: TrashedEntry,
+        actorUid: String,
+        actorName: String
+    ): Result<WriteOutcome> {
+        val docPath = "entries/${trashedEntry.id}"
+        return try {
+            val uid = requireUserId()
+            check(uid == actorUid) { "La sesión cambió; reintente." }
+            require(trashedEntry.id.isNotBlank()) { "ID de registro inválido." }
+            val safeActorName = actorName.trim().take(120).ifBlank { "Administrador" }
+
+            val restoredPayload = buildRestoredEntryPayload(
+                trashed = trashedEntry,
+                fallbackActorUid = uid,
+                fallbackActorName = safeActorName
+            )
+
+            val batch = db.batch()
+            val entryRef = db.collection("entries").document(trashedEntry.id)
+            val trashRef = db.collection("trashedEntries").document(trashedEntry.id)
+            batch.set(entryRef, restoredPayload)
+            batch.delete(trashRef)
+
+            val outcome = batch.commit().awaitWriteQueued()
+            Result.success(outcome)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun permanentlyDeleteFromTrash(entryId: String): Result<WriteOutcome> {
+        val docPath = "trashedEntries/$entryId"
         return try {
             requireUserId()
             require(entryId.isNotBlank()) { "ID de registro inválido." }
-            val outcome = db.collection("entries").document(entryId).delete().awaitWriteQueued()
+            val outcome = db.collection("trashedEntries").document(entryId).delete().awaitWriteQueued()
             Result.success(outcome)
         } catch (e: CancellationException) {
             throw e
@@ -727,6 +830,147 @@ class AccessRepository(
         if (validated.plateImageData.isNotBlank()) {
             payload["plateImageName"] = validated.plateImageName.ifBlank { "placa.jpg" }
             payload["plateImageData"] = validated.plateImageData
+        }
+        return payload
+    }
+
+    private fun buildTrashedPayload(
+        entry: AccessEntry,
+        deletedByUid: String,
+        deletedByName: String
+    ): Map<String, Any> {
+        val safeUnitId = entry.unitId.trim().take(64).ifBlank { DEFAULT_UNIT_ID }
+        val safeEntryDate = entry.entryDate.trim().takeIf { Regex("""^\d{4}-\d{2}-\d{2}$""").matches(it) }
+            ?: com.example.util.DateTimeUtils.todayIso()
+        val safeFullName = entry.fullName.trim().take(120).let {
+            if (it.length >= 2) it else "Sin nombre"
+        }
+        val safeDoc = entry.documentNumber.trim().take(40).ifBlank { "S/D" }
+        val safeDest = entry.destinationUnit.trim().take(80).ifBlank { "Dependencia Principal" }
+        val parsedStatus = entry.parsedStatus
+        val safeCreatorUid = entry.createdByUid.trim().take(128).ifBlank { deletedByUid }
+        val safeCreatorName = entry.createdByName.trim().take(120).ifBlank { deletedByName }
+
+        val payload = mutableMapOf<String, Any>(
+            "unitId" to safeUnitId,
+            "entryDate" to safeEntryDate,
+            "rank" to entry.rank.trim().take(40),
+            "fullName" to safeFullName,
+            "documentNumber" to safeDoc,
+            "plate" to entry.plate.trim().uppercase().take(20),
+            "destinationUnit" to safeDest,
+            "reason" to entry.reason.trim().take(160),
+            "visitorType" to entry.parsedVisitorType.name,
+            "expectedTime" to entry.expectedTime.trim().take(20),
+            "source" to entry.parsedSource.name,
+            "notes" to entry.notes.trim().take(300),
+            "status" to parsedStatus.name,
+            "createdByUid" to safeCreatorUid,
+            "createdByName" to safeCreatorName,
+            "createdAt" to (entry.createdAt ?: FieldValue.serverTimestamp()),
+            "updatedAt" to FieldValue.serverTimestamp(),
+            "deletedAt" to FieldValue.serverTimestamp(),
+            "deletedByUid" to deletedByUid,
+            "deletedByName" to deletedByName
+        )
+
+        if (isSafePlateImageDataUrl(entry.plateImageData)) {
+            payload["plateImageName"] = entry.plateImageName.trim().take(160).ifBlank { "placa.jpg" }
+            payload["plateImageData"] = entry.plateImageData.trim()
+        }
+        if (entry.restoredAt != null) {
+            payload["restoredAt"] = entry.restoredAt
+        }
+
+        when (parsedStatus) {
+            EntryStatus.PENDIENTE -> Unit
+            EntryStatus.INGRESO -> {
+                payload["checkInAt"] = entry.checkInAt ?: FieldValue.serverTimestamp()
+                payload["checkInByUid"] = entry.checkInByUid?.trim()?.take(128)?.ifBlank { safeCreatorUid }
+                    ?: safeCreatorUid
+                payload["checkInByName"] = entry.checkInByName?.trim()?.take(120)?.ifBlank { safeCreatorName }
+                    ?: safeCreatorName
+            }
+            EntryStatus.SALIDA -> {
+                payload["checkInAt"] = entry.checkInAt ?: FieldValue.serverTimestamp()
+                payload["checkInByUid"] = entry.checkInByUid?.trim()?.take(128)?.ifBlank { safeCreatorUid }
+                    ?: safeCreatorUid
+                payload["checkInByName"] = entry.checkInByName?.trim()?.take(120)?.ifBlank { safeCreatorName }
+                    ?: safeCreatorName
+                payload["checkOutAt"] = entry.checkOutAt ?: FieldValue.serverTimestamp()
+                payload["checkOutByUid"] = entry.checkOutByUid?.trim()?.take(128)?.ifBlank { deletedByUid }
+                    ?: deletedByUid
+                payload["checkOutByName"] = entry.checkOutByName?.trim()?.take(120)?.ifBlank { deletedByName }
+                    ?: deletedByName
+            }
+        }
+        return payload
+    }
+
+    private fun buildRestoredEntryPayload(
+        trashed: TrashedEntry,
+        fallbackActorUid: String,
+        fallbackActorName: String
+    ): Map<String, Any> {
+        val safeUnitId = trashed.unitId.trim().take(64).ifBlank { DEFAULT_UNIT_ID }
+        val safeEntryDate = trashed.entryDate.trim().takeIf { Regex("""^\d{4}-\d{2}-\d{2}$""").matches(it) }
+            ?: com.example.util.DateTimeUtils.todayIso()
+        val safeFullName = trashed.fullName.trim().take(120).let {
+            if (it.length >= 2) it else "Sin nombre"
+        }
+        val safeDoc = trashed.documentNumber.trim().take(40).ifBlank { "S/D" }
+        val safeDest = trashed.destinationUnit.trim().take(80).ifBlank { "Dependencia Principal" }
+        val parsedStatus = trashed.parsedStatus
+        val safeCreatorUid = trashed.createdByUid.trim().take(128).ifBlank { fallbackActorUid }
+        val safeCreatorName = trashed.createdByName.trim().take(120).ifBlank { fallbackActorName }
+
+        val payload = mutableMapOf<String, Any>(
+            "unitId" to safeUnitId,
+            "entryDate" to safeEntryDate,
+            "rank" to trashed.rank.trim().take(40),
+            "fullName" to safeFullName,
+            "documentNumber" to safeDoc,
+            "plate" to trashed.plate.trim().uppercase().take(20),
+            "destinationUnit" to safeDest,
+            "reason" to trashed.reason.trim().take(160),
+            "visitorType" to trashed.parsedVisitorType.name,
+            "expectedTime" to trashed.expectedTime.trim().take(20),
+            "source" to trashed.parsedSource.name,
+            "notes" to trashed.notes.trim().take(300),
+            "status" to parsedStatus.name,
+            "createdByUid" to safeCreatorUid,
+            "createdByName" to safeCreatorName,
+            "createdAt" to (trashed.createdAt ?: FieldValue.serverTimestamp()),
+            "updatedAt" to FieldValue.serverTimestamp(),
+            "restoredAt" to FieldValue.serverTimestamp()
+        )
+
+        if (isSafePlateImageDataUrl(trashed.plateImageData)) {
+            payload["plateImageName"] = trashed.plateImageName.trim().take(160).ifBlank { "placa.jpg" }
+            payload["plateImageData"] = trashed.plateImageData.trim()
+        }
+
+        when (parsedStatus) {
+            EntryStatus.PENDIENTE -> Unit
+            EntryStatus.INGRESO -> {
+                payload["checkInAt"] = trashed.checkInAt ?: FieldValue.serverTimestamp()
+                payload["checkInByUid"] = trashed.checkInByUid?.trim()?.take(128)?.ifBlank { safeCreatorUid }
+                    ?: safeCreatorUid
+                payload["checkInByName"] = trashed.checkInByName?.trim()?.take(120)?.ifBlank { safeCreatorName }
+                    ?: safeCreatorName
+            }
+            EntryStatus.SALIDA -> {
+                payload["checkInAt"] = trashed.checkInAt ?: FieldValue.serverTimestamp()
+                payload["checkInByUid"] = trashed.checkInByUid?.trim()?.take(128)?.ifBlank { safeCreatorUid }
+                    ?: safeCreatorUid
+                payload["checkInByName"] = trashed.checkInByName?.trim()?.take(120)?.ifBlank { safeCreatorName }
+                    ?: safeCreatorName
+                payload["checkOutAt"] = trashed.checkOutAt ?: FieldValue.serverTimestamp()
+                payload["checkOutByUid"] = trashed.checkOutByUid?.trim()?.take(128)?.ifBlank { fallbackActorUid }
+                    ?: fallbackActorUid
+                payload["checkOutByName"] = trashed.checkOutByName?.trim()?.take(120)?.ifBlank { fallbackActorName }
+                    ?: fallbackActorName
+            }
         }
         return payload
     }

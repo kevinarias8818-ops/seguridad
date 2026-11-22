@@ -12,7 +12,29 @@ const val BOOTSTRAPPED_ADMIN_EMAIL = "kevinarias.8818@gmail.com"
 enum class UserRole(val label: String) {
     PENDING("Pendiente de autorización"),
     ADMIN("Administrador"),
-    OPERATOR("Operador");
+    OPERATOR("Operador"),
+    DIAMANTE_ALMA("Diamante Alma");
+
+    val isActiveStaffRole: Boolean
+        get() = this == ADMIN || this == OPERATOR || this == DIAMANTE_ALMA
+
+    val canCreateEntries: Boolean
+        get() = this == ADMIN || this == DIAMANTE_ALMA
+
+    val canSendToTrash: Boolean
+        get() = this == ADMIN || this == DIAMANTE_ALMA
+
+    val canEditEntries: Boolean
+        get() = this == ADMIN
+
+    val canAccessTrash: Boolean
+        get() = this == ADMIN
+
+    val canManageUsers: Boolean
+        get() = this == ADMIN
+
+    val canDownloadExcel: Boolean
+        get() = this == ADMIN
 
     companion object {
         fun fromRaw(raw: String?): UserRole =
@@ -107,7 +129,49 @@ data class AccessEntry(
     val createdByUid: String = "",
     val createdByName: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val restoredAt: Timestamp? = null
+) {
+    val parsedVisitorType: VisitorType get() = VisitorType.fromRaw(visitorType)
+    val parsedSource: EntrySource get() = EntrySource.fromRaw(source)
+    val parsedStatus: EntryStatus get() = EntryStatus.fromRaw(status)
+    val displayTitleWithRank: String
+        get() = if (rank.isNotBlank()) "$rank $fullName" else fullName
+}
+
+@Keep
+@IgnoreExtraProperties
+data class TrashedEntry(
+    @DocumentId val id: String = "",
+    val unitId: String = DEFAULT_UNIT_ID,
+    val entryDate: String = "",
+    val rank: String = "",
+    val fullName: String = "",
+    val documentNumber: String = "",
+    val plate: String = "",
+    val plateImageName: String = "",
+    val plateImageData: String = "",
+    val destinationUnit: String = "",
+    val reason: String = "",
+    val visitorType: String = VisitorType.VISITANTE.name,
+    val expectedTime: String = "",
+    val source: String = EntrySource.MANUAL.name,
+    val notes: String = "",
+    val status: String = EntryStatus.PENDIENTE.name,
+    val checkInAt: Timestamp? = null,
+    val checkInByUid: String? = null,
+    val checkInByName: String? = null,
+    val checkOutAt: Timestamp? = null,
+    val checkOutByUid: String? = null,
+    val checkOutByName: String? = null,
+    val createdByUid: String = "",
+    val createdByName: String = "",
+    val createdAt: Timestamp? = null,
+    val updatedAt: Timestamp? = null,
+    val restoredAt: Timestamp? = null,
+    @ServerTimestamp val deletedAt: Timestamp? = null,
+    val deletedByUid: String = "",
+    val deletedByName: String = ""
 ) {
     val parsedVisitorType: VisitorType get() = VisitorType.fromRaw(visitorType)
     val parsedSource: EntrySource get() = EntrySource.fromRaw(source)

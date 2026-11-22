@@ -151,6 +151,12 @@ textarea {
   border-color: rgba(16, 185, 129, 0.4);
 }
 
+.pill-diamante {
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(129, 140, 248, 0.45);
+}
+
 .pill-pending {
   color: #fbbf24;
   background: var(--amber-soft);
@@ -327,6 +333,20 @@ textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
+  text-align: left;
+  transition: transform 0.1s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.kpi-card.is-clickable {
+  cursor: pointer;
+}
+
+.kpi-card.is-clickable:hover {
+  background: var(--bg-card-hover);
+}
+
+.kpi-card.is-selected {
+  box-shadow: 0 0 0 2px currentColor;
 }
 
 .kpi-label {
@@ -464,6 +484,17 @@ textarea {
   background: var(--primary-soft);
   border-color: var(--primary);
   color: #fff;
+}
+
+.chip.chip-onsite {
+  border-color: var(--emerald-border);
+  color: #6ee7b7;
+}
+
+.chip.chip-onsite.active {
+  background: var(--emerald-soft);
+  border-color: #34d399;
+  color: #ecfdf5;
 }
 
 /* Admin quick actions bar */
@@ -756,6 +787,19 @@ textarea {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+
+.warning-banner {
+  background: var(--amber-soft);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius-sm);
+  padding: 11px 13px;
+  font-size: 0.85rem;
+  color: #fef3c7;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
 }
 
 /* Modals */

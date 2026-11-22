@@ -19,6 +19,9 @@ exports.notifyAdminsOnEntryEvent = onDocumentWritten(
     const after = event.data?.after?.data() || null;
     if (!after) return;
 
+    const isRestoredCreation = !before && Boolean(after.restoredAt);
+    if (isRestoredCreation) return;
+
     const isNewEntry = !before;
     const becameCheckedIn = Boolean(
       before && before.status === 'PENDIENTE' && after.status === 'INGRESO'

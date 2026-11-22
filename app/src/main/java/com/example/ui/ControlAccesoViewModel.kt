@@ -8,6 +8,7 @@ import com.example.data.AccessRepository
 import com.example.model.AccessEntry
 import com.example.model.EntryDraft
 import com.example.model.EntryStatus
+import com.example.model.TrashedEntry
 import com.example.model.UiState
 import com.example.model.UserProfile
 import com.example.model.UserRole
@@ -62,8 +63,8 @@ data class EntryPushAlert(
 
 enum class EntryStatusFilter(val label: String) {
     ALL("Todos"),
+    CHECKED_IN("En sitio"),
     PENDING("Pendiente por ingresar"),
-    CHECKED_IN("Ya ingresó"),
     CHECKED_OUT("Ya salió")
 }
 
@@ -177,15 +178,16 @@ class ControlAccesoViewModel(
                 is UiState.Error -> flowOf<UiState<List<AccessEntry>>>(UiState.Error(profileUi.message))
                 is UiState.Success -> {
                     val profile = profileUi.data
-                    val isAuthorized = profile.active &&
-                        (profile.parsedRole == UserRole.ADMIN || profile.parsedRole == UserRole.OPERATOR)
+                    val role = profile.parsedRole
+                    val isAuthorized = profile.active && role.isActiveStaffRole
                     if (!isAuthorized) {
                         _isFromCache.value = false
                         _pendingSyncIds.value = emptySet()
                         flowOf<UiState<List<AccessEntry>>>(UiState.Success(emptyList()))
                     } else {
-                        val effectiveIsAdmin = profile.parsedRole == UserRole.ADMIN && !simOperator
-                        val dateFilter = if (effectiveIsAdmin && dateScope == DateScopeFilter.FULL_HISTORY) {
+                        val effectiveIsAdmin = role == UserRole.ADMIN && !simOperator
+                        val canUseFullHistory = effectiveIsAdmin || role == UserRole.DIAMANTE_ALMA
+                        val dateFilter = if (canUseFullHistory && dateScope == DateScopeFilter.FULL_HISTORY) {
                             null
                         } else {
                             DateTimeUtils.todayIso()
@@ -201,9 +203,9 @@ class ControlAccesoViewModel(
                                 _isFromCache.value = snap.isFromCache
                                 _pendingSyncIds.value = snap.pendingSyncIds
                                 if (profile.active &&
-                                    (profile.parsedRole == UserRole.ADMIN || profile.parsedRole == UserRole.OPERATOR)
+                                    (role == UserRole.ADMIN || role == UserRole.OPERATOR)
                                 ) {
-                                    detectNewEntryAlerts(snap.entries, profile.parsedRole)
+                                    detectNewEntryAlerts(snap.entries, role)
                                 }
                             }
                             .map<com.example.data.EntriesSnapshot, UiState<List<AccessEntry>>> { snap ->
@@ -227,9 +229,75 @@ class ControlAccesoViewModel(
             initialValue = UiState.Loading
         )
 
+    val activeOnSiteEntriesState: StateFlow<List<AccessEntry>> =
+        combine(profileState, _simulateOperatorMode) { profileUi, simOperator ->
+            profileUi to simOperator
+        }.flatMapLatest { (profileUi, simOperator) ->
+            val profile = (profileUi as? UiState.Success)?.data
+            val canCreate = profile != null &&
+                profile.active &&
+                profile.parsedRole.canCreateEntries &&
+                !simOperator
+            if (canCreate && profile != null) {
+                repository.observeEntries(
+                    currentUid = currentUserId,
+                    unitId = profile.unitId,
+                    entryDateFilter = null
+                )
+                    .map { snap -> snap.entries.filter { it.parsedStatus == EntryStatus.INGRESO } }
+                    .catch { emit(emptyList()) }
+            } else {
+                flowOf(emptyList())
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = emptyList()
+        )
+
+    val trashedEntriesState: StateFlow<UiState<List<TrashedEntry>>> =
+        combine(profileState, _simulateOperatorMode) { profileUi, simOperator ->
+            profileUi to simOperator
+        }.flatMapLatest { (profileUi, simOperator) ->
+            val profile = (profileUi as? UiState.Success)?.data
+            val canAccessTrash = profile != null &&
+                profile.active &&
+                profile.parsedRole.canAccessTrash &&
+                !simOperator
+            if (canAccessTrash && profile != null) {
+                repository.observeTrashedEntries(
+                    currentUid = currentUserId,
+                    unitId = profile.unitId
+                )
+                    .map<List<TrashedEntry>, UiState<List<TrashedEntry>>> { UiState.Success(it) }
+                    .catch { error ->
+                        val firestoreError = generateSequence(error) { it.cause }
+                            .filterIsInstance<FirebaseFirestoreException>()
+                            .firstOrNull()
+                        if (firestoreError == null && error is CancellationException) throw error
+                        val rootError = firestoreError ?: error
+                        Log.w(TAG, "Error observing trashed entries", rootError)
+                        emit(UiState.Error(rootError.message ?: "Error al cargar papelera"))
+                    }
+            } else {
+                flowOf(UiState.Success(emptyList()))
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
     val allUsersState: StateFlow<UiState<List<UserProfile>>> =
-        profileState.flatMapLatest { profileUi ->
-            if (profileUi is UiState.Success && profileUi.data.parsedRole == UserRole.ADMIN) {
+        combine(profileState, _simulateOperatorMode) { profileUi, simOperator ->
+            profileUi to simOperator
+        }.flatMapLatest { (profileUi, simOperator) ->
+            val profile = (profileUi as? UiState.Success)?.data
+            val canManageUsers = profile != null &&
+                profile.active &&
+                profile.parsedRole.canManageUsers &&
+                !simOperator
+            if (canManageUsers) {
                 repository.observeAllUsers(currentUserId)
                     .map<List<UserProfile>, UiState<List<UserProfile>>> { UiState.Success(it) }
                     .catch { error ->
@@ -432,6 +500,13 @@ class ControlAccesoViewModel(
     fun createEntry(draft: EntryDraft, onDone: () -> Unit) {
         if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
+        val canCreate = profile.active &&
+            profile.parsedRole.canCreateEntries &&
+            !(profile.parsedRole == UserRole.ADMIN && _simulateOperatorMode.value)
+        if (!canCreate) {
+            _snackbarEvents.tryEmit("Tu rol no tiene permiso para registrar ingresos.")
+            return
+        }
         viewModelScope.launch {
             _isSubmitting.value = true
             try {
@@ -461,6 +536,13 @@ class ControlAccesoViewModel(
     fun importEntriesBatch(drafts: List<EntryDraft>, onDone: () -> Unit) {
         if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
+        val canCreate = profile.active &&
+            profile.parsedRole.canCreateEntries &&
+            !(profile.parsedRole == UserRole.ADMIN && _simulateOperatorMode.value)
+        if (!canCreate) {
+            _snackbarEvents.tryEmit("Tu rol no tiene permiso para importar ingresos.")
+            return
+        }
         viewModelScope.launch {
             _isSubmitting.value = true
             try {
@@ -496,6 +578,11 @@ class ControlAccesoViewModel(
     ) {
         if (_isSubmitting.value) return
         val profile = (profileState.value as? UiState.Success)?.data ?: return
+        val canEdit = profile.active && profile.parsedRole.canEditEntries && !_simulateOperatorMode.value
+        if (!canEdit) {
+            _snackbarEvents.tryEmit("Solo el rol Administrador puede editar registros existentes.")
+            return
+        }
         viewModelScope.launch {
             _isSubmitting.value = true
             try {
@@ -524,23 +611,104 @@ class ControlAccesoViewModel(
         }
     }
 
-    fun deleteEntry(entry: AccessEntry) {
+    fun moveEntryToTrash(entry: AccessEntry) {
+        val profile = (profileState.value as? UiState.Success)?.data ?: return
+        val canTrash = profile.active &&
+            profile.parsedRole.canSendToTrash &&
+            !(profile.parsedRole == UserRole.ADMIN && _simulateOperatorMode.value)
+        if (!canTrash) {
+            _snackbarEvents.tryEmit("No tienes permiso para enviar ingresos a la papelera.")
+            return
+        }
         viewModelScope.launch {
-            val result = repository.deleteEntry(entry.id)
+            _busyEntryId.value = entry.id
+            val result = repository.moveEntryToTrash(
+                entry = entry,
+                actorUid = currentUserId,
+                actorName = profile.displayName
+            )
+            _busyEntryId.value = null
             result.onSuccess { outcome ->
                 val msg = if (outcome.queuedOffline) {
-                    "Eliminación en cola offline. Se aplicará al reconectar."
+                    "Envío a papelera en cola offline (${entry.fullName}). Se sincronizará al reconectar."
                 } else {
-                    "Registro eliminado"
+                    "Ingreso enviado a la papelera: ${entry.fullName}"
                 }
                 _snackbarEvents.tryEmit(msg)
             }.onFailure { error ->
-                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo eliminar")
+                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo enviar a la papelera")
+            }
+        }
+    }
+
+    fun restoreEntryFromTrash(trashedEntry: TrashedEntry) {
+        val profile = (profileState.value as? UiState.Success)?.data
+        val isAuthorizedAdmin = profile != null &&
+            profile.active &&
+            profile.parsedRole.canAccessTrash &&
+            !_simulateOperatorMode.value
+        if (!isAuthorizedAdmin || profile == null) {
+            _snackbarEvents.tryEmit("Solo el Administrador puede restaurar registros de la papelera.")
+            return
+        }
+        viewModelScope.launch {
+            _busyEntryId.value = trashedEntry.id
+            val result = repository.restoreEntryFromTrash(
+                trashedEntry = trashedEntry,
+                actorUid = currentUserId,
+                actorName = profile.displayName
+            )
+            _busyEntryId.value = null
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Restauración guardada offline (${trashedEntry.fullName})."
+                } else {
+                    "Ingreso restaurado: ${trashedEntry.fullName}"
+                }
+                _snackbarEvents.tryEmit(msg)
+            }.onFailure { error ->
+                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo restaurar el ingreso")
+            }
+        }
+    }
+
+    fun permanentlyDeleteFromTrash(trashedEntry: TrashedEntry) {
+        val profile = (profileState.value as? UiState.Success)?.data
+        val isAuthorizedAdmin = profile != null &&
+            profile.active &&
+            profile.parsedRole.canAccessTrash &&
+            !_simulateOperatorMode.value
+        if (!isAuthorizedAdmin) {
+            _snackbarEvents.tryEmit("Solo el Administrador puede eliminar definitivamente de la papelera.")
+            return
+        }
+        viewModelScope.launch {
+            _busyEntryId.value = trashedEntry.id
+            val result = repository.permanentlyDeleteFromTrash(trashedEntry.id)
+            _busyEntryId.value = null
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Eliminación definitiva en cola offline."
+                } else {
+                    "Registro eliminado definitivamente de la papelera"
+                }
+                _snackbarEvents.tryEmit(msg)
+            }.onFailure { error ->
+                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo eliminar definitivamente")
             }
         }
     }
 
     fun updateUserRoleAndStatus(targetUser: UserProfile, role: UserRole, active: Boolean) {
+        val profile = (profileState.value as? UiState.Success)?.data
+        val canManage = profile != null &&
+            profile.active &&
+            profile.parsedRole.canManageUsers &&
+            !_simulateOperatorMode.value
+        if (!canManage) {
+            _snackbarEvents.tryEmit("Solo el Administrador puede gestionar roles de usuarios.")
+            return
+        }
         viewModelScope.launch {
             val result = repository.updateUserRoleAndStatus(targetUser.userId, role, active)
             result.onSuccess { outcome ->
@@ -673,7 +841,7 @@ class ControlAccesoViewModel(
         ): Boolean = when (role) {
             UserRole.ADMIN -> isNewEntry || becameCheckedIn || becameCheckedOut
             UserRole.OPERATOR -> isNewEntry || becameCheckedIn
-            UserRole.PENDING -> false
+            UserRole.DIAMANTE_ALMA, UserRole.PENDING -> false
         }
     }
 }

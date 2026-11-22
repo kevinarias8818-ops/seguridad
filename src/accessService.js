@@ -86,6 +86,103 @@ export function isValidIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value || '');
 }
 
+export function currentTimeHm(now = new Date()) {
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+export function formatDocumentNumberInput(raw = '') {
+  return String(raw).replace(/\D/g, '').slice(0, 20);
+}
+
+export function formatPlateInput(raw = '') {
+  return String(raw)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 10);
+}
+
+export function formatEntryTimeDigits(previous = '', rawNext = '') {
+  const digits = String(rawNext).replace(/\D/g, '').slice(0, 4);
+  const isDeleting = String(rawNext).length < String(previous).length;
+  if (!digits) return '';
+  if (digits.length === 1) return digits;
+  if (digits.length === 2) {
+    if (isDeleting && String(previous).endsWith(':')) {
+      return digits.slice(0, 1);
+    }
+    return `${digits}:`;
+  }
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+export function normalizeExistingTime(raw = '') {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length === 3) return `0${digits.slice(0, 1)}:${digits.slice(1)}`;
+  if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  return trimmed.slice(0, 5);
+}
+
+export function isValidEntryTime(raw = '') {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return true;
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(trimmed);
+}
+
+function normalizeDocumentForMatch(raw = '') {
+  const digits = String(raw || '').replace(/\D/g, '');
+  return digits || String(raw || '').trim().toUpperCase();
+}
+
+function normalizePlateForMatch(raw = '') {
+  return String(raw || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+export function findActiveOnSiteDuplicates(
+  activeEntries = [],
+  documentNumber = '',
+  plate = '',
+  excludeEntryId = null
+) {
+  const cleanDoc = normalizeDocumentForMatch(documentNumber);
+  const cleanPlate = normalizePlateForMatch(plate);
+  if (!cleanDoc && !cleanPlate) return [];
+
+  const matches = [];
+  for (const entry of activeEntries) {
+    if (!entry || entry.status !== 'INGRESO') continue;
+    if (excludeEntryId && entry.id === excludeEntryId) continue;
+    const entryDoc = normalizeDocumentForMatch(entry.documentNumber || '');
+    const entryPlate = normalizePlateForMatch(entry.plate || '');
+    const matchedByDocument = Boolean(cleanDoc && entryDoc === cleanDoc);
+    const matchedByPlate = Boolean(cleanPlate && entryPlate === cleanPlate);
+    if (matchedByDocument || matchedByPlate) {
+      matches.push({ entry, matchedByDocument, matchedByPlate });
+    }
+  }
+  return matches;
+}
+
+export function subscribeOnSiteEntries(unitId, onData, onError) {
+  const q = query(collection(db, 'entries'), where('unitId', '==', unitId || UNIT_ID));
+  return onSnapshot(
+    q,
+    { includeMetadataChanges: true },
+    (snap) => {
+      const items = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((e) => e.status === 'INGRESO');
+      onData(items);
+    },
+    onError
+  );
+}
+
 export function formatTimeHm(ts) {
   if (!ts) return '—';
   const date = typeof ts.toDate === 'function' ? ts.toDate() : new Date(ts);
@@ -291,7 +388,7 @@ export function subscribeAllUsers(onData, onError) {
     q,
     { includeMetadataChanges: true },
     (snap) => {
-      const roleOrder = { PENDING: 0, ADMIN: 1, OPERATOR: 2 };
+      const roleOrder = { PENDING: 0, ADMIN: 1, DIAMANTE_ALMA: 2, OPERATOR: 3 };
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => {
         const rA = roleOrder[a.role] ?? 9;
@@ -554,8 +651,147 @@ export async function markCheckOutNow(entryId, currentUser) {
   );
 }
 
-export async function deleteEntry(entryId) {
-  return awaitWriteWithOfflineGrace(deleteDoc(doc(db, 'entries', entryId)));
+function buildTrashedPayload(entry, currentUser) {
+  const safeUid = currentUser?.userId || entry.createdByUid || 'unknown';
+  const safeActorName = ((currentUser?.displayName || currentUser?.email || 'Usuario autorizado').trim()).slice(0, 120);
+  const safeStatus = entry.status === 'SALIDA' ? 'SALIDA' : entry.status === 'INGRESO' ? 'INGRESO' : 'PENDIENTE';
+  const safeEntryDate = isValidIsoDate(entry.entryDate) ? entry.entryDate : todayIsoDate();
+  const safeFullName = ((entry.fullName || '').trim() || 'Sin nombre').slice(0, 120);
+  const safeCreatorUid = (entry.createdByUid || safeUid).slice(0, 128);
+  const safeCreatorName = ((entry.createdByName || safeActorName).trim() || safeActorName).slice(0, 120);
+
+  const payload = {
+    unitId: entry.unitId || currentUser?.unitId || UNIT_ID,
+    entryDate: safeEntryDate,
+    rank: (entry.rank || '').trim().slice(0, 40),
+    fullName: safeFullName.length >= 2 ? safeFullName : 'Sin nombre',
+    documentNumber: ((entry.documentNumber || '').trim() || 'S/D').slice(0, 40),
+    plate: (entry.plate || '').trim().toUpperCase().slice(0, 20),
+    destinationUnit: ((entry.destinationUnit || '').trim() || 'Dependencia Principal').slice(0, 80),
+    reason: (entry.reason || '').trim().slice(0, 160),
+    visitorType: ['PERSONAL', 'VISITANTE', 'PROVEEDOR', 'CONTRATISTA'].includes(entry.visitorType)
+      ? entry.visitorType
+      : 'VISITANTE',
+    expectedTime: (entry.expectedTime || '').trim().slice(0, 20),
+    source: entry.source === 'CORREO_INSTITUCIONAL' ? 'CORREO_INSTITUCIONAL' : 'MANUAL',
+    notes: (entry.notes || '').trim().slice(0, 300),
+    status: safeStatus,
+    createdByUid: safeCreatorUid,
+    createdByName: safeCreatorName,
+    createdAt: entry.createdAt || serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    deletedAt: serverTimestamp(),
+    deletedByUid: safeUid,
+    deletedByName: safeActorName,
+  };
+
+  const validImage = validatePlateAttachment(entry.plateImageName, entry.plateImageData);
+  if (validImage) {
+    payload.plateImageName = validImage.fileName;
+    payload.plateImageData = validImage.dataUrl;
+  }
+  if (entry.restoredAt) {
+    payload.restoredAt = entry.restoredAt;
+  }
+
+  if (safeStatus === 'INGRESO' || safeStatus === 'SALIDA') {
+    payload.checkInAt = entry.checkInAt || serverTimestamp();
+    payload.checkInByUid = (entry.checkInByUid || safeCreatorUid).slice(0, 128);
+    payload.checkInByName = ((entry.checkInByName || safeCreatorName).trim() || safeCreatorName).slice(0, 120);
+  }
+  if (safeStatus === 'SALIDA') {
+    payload.checkOutAt = entry.checkOutAt || serverTimestamp();
+    payload.checkOutByUid = (entry.checkOutByUid || safeUid).slice(0, 128);
+    payload.checkOutByName = ((entry.checkOutByName || safeActorName).trim() || safeActorName).slice(0, 120);
+  }
+  return payload;
+}
+
+function buildRestoredEntryPayload(trashed, currentUser) {
+  const safeUid = currentUser?.userId || trashed.createdByUid || 'unknown';
+  const safeActorName = ((currentUser?.displayName || currentUser?.email || 'Administrador').trim()).slice(0, 120);
+  const safeStatus = trashed.status === 'SALIDA' ? 'SALIDA' : trashed.status === 'INGRESO' ? 'INGRESO' : 'PENDIENTE';
+  const safeEntryDate = isValidIsoDate(trashed.entryDate) ? trashed.entryDate : todayIsoDate();
+  const safeFullName = ((trashed.fullName || '').trim() || 'Sin nombre').slice(0, 120);
+  const safeCreatorUid = (trashed.createdByUid || safeUid).slice(0, 128);
+  const safeCreatorName = ((trashed.createdByName || safeActorName).trim() || safeActorName).slice(0, 120);
+
+  const payload = {
+    unitId: trashed.unitId || currentUser?.unitId || UNIT_ID,
+    entryDate: safeEntryDate,
+    rank: (trashed.rank || '').trim().slice(0, 40),
+    fullName: safeFullName.length >= 2 ? safeFullName : 'Sin nombre',
+    documentNumber: ((trashed.documentNumber || '').trim() || 'S/D').slice(0, 40),
+    plate: (trashed.plate || '').trim().toUpperCase().slice(0, 20),
+    destinationUnit: ((trashed.destinationUnit || '').trim() || 'Dependencia Principal').slice(0, 80),
+    reason: (trashed.reason || '').trim().slice(0, 160),
+    visitorType: ['PERSONAL', 'VISITANTE', 'PROVEEDOR', 'CONTRATISTA'].includes(trashed.visitorType)
+      ? trashed.visitorType
+      : 'VISITANTE',
+    expectedTime: (trashed.expectedTime || '').trim().slice(0, 20),
+    source: trashed.source === 'CORREO_INSTITUCIONAL' ? 'CORREO_INSTITUCIONAL' : 'MANUAL',
+    notes: (trashed.notes || '').trim().slice(0, 300),
+    status: safeStatus,
+    createdByUid: safeCreatorUid,
+    createdByName: safeCreatorName,
+    createdAt: trashed.createdAt || serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    restoredAt: serverTimestamp(),
+  };
+
+  const validImage = validatePlateAttachment(trashed.plateImageName, trashed.plateImageData);
+  if (validImage) {
+    payload.plateImageName = validImage.fileName;
+    payload.plateImageData = validImage.dataUrl;
+  }
+
+  if (safeStatus === 'INGRESO' || safeStatus === 'SALIDA') {
+    payload.checkInAt = trashed.checkInAt || serverTimestamp();
+    payload.checkInByUid = (trashed.checkInByUid || safeCreatorUid).slice(0, 128);
+    payload.checkInByName = ((trashed.checkInByName || safeCreatorName).trim() || safeCreatorName).slice(0, 120);
+  }
+  if (safeStatus === 'SALIDA') {
+    payload.checkOutAt = trashed.checkOutAt || serverTimestamp();
+    payload.checkOutByUid = (trashed.checkOutByUid || safeUid).slice(0, 128);
+    payload.checkOutByName = ((trashed.checkOutByName || safeActorName).trim() || safeActorName).slice(0, 120);
+  }
+  return payload;
+}
+
+export function subscribeTrashedEntries(unitId, onData, onError) {
+  const q = query(collection(db, 'trashedEntries'), where('unitId', '==', unitId || UNIT_ID));
+  return onSnapshot(
+    q,
+    { includeMetadataChanges: true },
+    (snap) => {
+      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      items.sort((a, b) => getTimestampMillis(b.deletedAt) - getTimestampMillis(a.deletedAt));
+      onData(items);
+    },
+    onError
+  );
+}
+
+export async function moveEntryToTrash(entry, currentUser) {
+  const batch = writeBatch(db);
+  const trashedRef = doc(db, 'trashedEntries', entry.id);
+  const entryRef = doc(db, 'entries', entry.id);
+  batch.set(trashedRef, buildTrashedPayload(entry, currentUser));
+  batch.delete(entryRef);
+  return awaitWriteWithOfflineGrace(batch.commit());
+}
+
+export async function restoreEntryFromTrash(trashedEntry, currentUser) {
+  const batch = writeBatch(db);
+  const entryRef = doc(db, 'entries', trashedEntry.id);
+  const trashedRef = doc(db, 'trashedEntries', trashedEntry.id);
+  batch.set(entryRef, buildRestoredEntryPayload(trashedEntry, currentUser));
+  batch.delete(trashedRef);
+  return awaitWriteWithOfflineGrace(batch.commit());
+}
+
+export async function permanentlyDeleteFromTrash(entryId) {
+  return awaitWriteWithOfflineGrace(deleteDoc(doc(db, 'trashedEntries', entryId)));
 }
 
 export async function updateUserRoleAndStatus(targetUserId, role, active) {

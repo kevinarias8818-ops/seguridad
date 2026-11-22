@@ -1,6 +1,7 @@
 package com.example.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,11 +17,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
@@ -45,6 +48,8 @@ import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.example.ui.theme.Amber100
 import com.example.ui.theme.Amber900
+import com.example.ui.theme.Sky100
+import com.example.ui.theme.Sky900
 
 @Composable
 fun UsersManagementScreen(
@@ -89,7 +94,7 @@ fun UsersManagementScreen(
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
                             )
                             Text(
-                                text = "Las cuentas nuevas ingresan sin acceso (Pendiente). Solo el Administrador puede otorgar el rol de Operador o Administrador para habilitar la vista de ingresos.",
+                                text = "Las cuentas nuevas ingresan sin acceso (Pendiente). Solo el Administrador puede otorgar los roles Operador, Diamante Alma (registra ingresos y envía a papelera) o Administrador.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
                             )
@@ -135,6 +140,18 @@ fun UsersManagementScreen(
                         val role = user.parsedRole
                         val isPending = role == UserRole.PENDING
 
+                        val badgeColor = when (role) {
+                            UserRole.PENDING -> Amber100
+                            UserRole.ADMIN -> MaterialTheme.colorScheme.primaryContainer
+                            UserRole.DIAMANTE_ALMA -> Sky100
+                            UserRole.OPERATOR -> MaterialTheme.colorScheme.surfaceVariant
+                        }
+                        val badgeTextColor = when (role) {
+                            UserRole.PENDING -> Amber900
+                            UserRole.DIAMANTE_ALMA -> Sky900
+                            else -> MaterialTheme.colorScheme.onSurface
+                        }
+
                         Card(
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
@@ -173,11 +190,7 @@ fun UsersManagementScreen(
                                     }
 
                                     Surface(
-                                        color = when (role) {
-                                            UserRole.PENDING -> Amber100
-                                            UserRole.ADMIN -> MaterialTheme.colorScheme.primaryContainer
-                                            UserRole.OPERATOR -> MaterialTheme.colorScheme.surfaceVariant
-                                        },
+                                        color = badgeColor,
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Row(
@@ -189,65 +202,99 @@ fun UsersManagementScreen(
                                                 imageVector = when (role) {
                                                     UserRole.PENDING -> Icons.Filled.HourglassTop
                                                     UserRole.ADMIN -> Icons.Filled.AdminPanelSettings
+                                                    UserRole.DIAMANTE_ALMA -> Icons.Filled.Diamond
                                                     UserRole.OPERATOR -> Icons.Filled.Badge
                                                 },
                                                 contentDescription = null,
-                                                tint = if (isPending) Amber900 else MaterialTheme.colorScheme.onSurface,
+                                                tint = badgeTextColor,
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Text(
                                                 text = if (isPending) "Pendiente" else role.label,
                                                 style = MaterialTheme.typography.labelMedium,
                                                 fontWeight = FontWeight.Bold,
-                                                color = if (isPending) Amber900 else MaterialTheme.colorScheme.onSurface
+                                                color = badgeTextColor
                                             )
                                         }
                                     }
                                 }
 
                                 if (isPending && !isSelf) {
-                                    Row(
+                                    Column(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Button(
-                                            onClick = {
-                                                onUpdateUserRole(user, UserRole.OPERATOR, true)
-                                            },
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .height(48.dp)
-                                                .testTag("approve_operator_${user.userId}"),
-                                            shape = RoundedCornerShape(10.dp)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.CheckCircle,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Dar rol Operador")
+                                            Button(
+                                                onClick = {
+                                                    onUpdateUserRole(user, UserRole.OPERATOR, true)
+                                                },
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(48.dp)
+                                                    .testTag("approve_operator_${user.userId}"),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.CheckCircle,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Operador")
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    onUpdateUserRole(user, UserRole.DIAMANTE_ALMA, true)
+                                                },
+                                                modifier = Modifier
+                                                    .weight(1.1f)
+                                                    .height(48.dp)
+                                                    .testTag("approve_diamante_${user.userId}"),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Diamond,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Diamante Alma")
+                                            }
                                         }
                                         OutlinedButton(
                                             onClick = {
                                                 onUpdateUserRole(user, UserRole.ADMIN, true)
                                             },
                                             modifier = Modifier
-                                                .weight(0.9f)
+                                                .fillMaxWidth()
                                                 .height(48.dp)
                                                 .testTag("approve_admin_${user.userId}"),
                                             shape = RoundedCornerShape(10.dp)
                                         ) {
-                                            Text("Hacer Admin")
+                                            Icon(
+                                                imageVector = Icons.Filled.AdminPanelSettings,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Hacer Administrador")
                                         }
                                     }
                                 } else {
-                                    Row(
+                                    Column(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
                                             FilterChip(
                                                 selected = role == UserRole.OPERATOR,
                                                 onClick = {
@@ -256,7 +303,19 @@ fun UsersManagementScreen(
                                                     }
                                                 },
                                                 enabled = !isSelf,
-                                                label = { Text("Operador") }
+                                                label = { Text("Operador") },
+                                                modifier = Modifier.testTag("chip_operator_${user.userId}")
+                                            )
+                                            FilterChip(
+                                                selected = role == UserRole.DIAMANTE_ALMA,
+                                                onClick = {
+                                                    if (!isSelf && role != UserRole.DIAMANTE_ALMA) {
+                                                        onUpdateUserRole(user, UserRole.DIAMANTE_ALMA, true)
+                                                    }
+                                                },
+                                                enabled = !isSelf,
+                                                label = { Text("Diamante Alma") },
+                                                modifier = Modifier.testTag("chip_diamante_${user.userId}")
                                             )
                                             FilterChip(
                                                 selected = role == UserRole.ADMIN,
@@ -266,23 +325,32 @@ fun UsersManagementScreen(
                                                     }
                                                 },
                                                 enabled = !isSelf,
-                                                label = { Text("Administrador") }
+                                                label = { Text("Administrador") },
+                                                modifier = Modifier.testTag("chip_admin_${user.userId}")
                                             )
                                         }
 
                                         Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.End,
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
-                                                text = if (user.active) "Activo" else "Sin acceso",
+                                                text = if (user.active) "Cuenta activa" else "Sin acceso",
                                                 style = MaterialTheme.typography.labelMedium
                                             )
+                                            Spacer(modifier = Modifier.width(8.dp))
                                             Switch(
                                                 checked = user.active,
                                                 enabled = !isSelf,
                                                 onCheckedChange = { newActive ->
-                                                    val updatedRole = if (!newActive) UserRole.PENDING else role
+                                                    val updatedRole = if (!newActive) {
+                                                        UserRole.PENDING
+                                                    } else if (role == UserRole.PENDING) {
+                                                        UserRole.OPERATOR
+                                                    } else {
+                                                        role
+                                                    }
                                                     onUpdateUserRole(user, updatedRole, newActive)
                                                 }
                                             )

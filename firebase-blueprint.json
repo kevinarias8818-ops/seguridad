@@ -19,8 +19,8 @@
         },
         "role": {
           "type": "string",
-          "enum": ["PENDING", "ADMIN", "OPERATOR"],
-          "description": "Rol asignado: PENDING (Sin acceso hasta aprobación), ADMIN (Encargado de Seguridad) u OPERATOR (Control de Garita)."
+          "enum": ["PENDING", "ADMIN", "OPERATOR", "DIAMANTE_ALMA"],
+          "description": "Rol asignado: PENDING (Sin acceso hasta aprobación), ADMIN (Encargado de Seguridad), OPERATOR (Control de Garita) o DIAMANTE_ALMA (Registro de ingresos y envío a papelera)."
         },
         "unitId": {
           "type": "string",
@@ -163,6 +163,11 @@
           "type": "string",
           "format": "date-time",
           "description": "Última actualización (FieldValue.serverTimestamp())."
+        },
+        "restoredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de restauración desde la papelera (opcional)."
         }
       },
       "required": [
@@ -181,6 +186,81 @@
         "createdByName",
         "createdAt",
         "updatedAt"
+      ]
+    },
+    "TrashedEntry": {
+      "title": "TrashedEntry",
+      "description": "Registro de ingreso enviado a la papelera (borrado lógico), visible únicamente para Administrador.",
+      "type": "object",
+      "properties": {
+        "unitId": { "type": "string" },
+        "entryDate": { "type": "string" },
+        "rank": { "type": "string" },
+        "fullName": { "type": "string" },
+        "documentNumber": { "type": "string" },
+        "plate": { "type": "string" },
+        "plateImageName": { "type": "string" },
+        "plateImageData": { "type": "string" },
+        "destinationUnit": { "type": "string" },
+        "reason": { "type": "string" },
+        "visitorType": {
+          "type": "string",
+          "enum": ["PERSONAL", "VISITANTE", "PROVEEDOR", "CONTRATISTA"]
+        },
+        "expectedTime": { "type": "string" },
+        "source": {
+          "type": "string",
+          "enum": ["MANUAL", "CORREO_INSTITUCIONAL"]
+        },
+        "notes": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["PENDIENTE", "INGRESO", "SALIDA"]
+        },
+        "checkInAt": { "type": "string", "format": "date-time" },
+        "checkInByUid": { "type": "string" },
+        "checkInByName": { "type": "string" },
+        "checkOutAt": { "type": "string", "format": "date-time" },
+        "checkOutByUid": { "type": "string" },
+        "checkOutByName": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "restoredAt": { "type": "string", "format": "date-time" },
+        "deletedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora de envío a la papelera (FieldValue.serverTimestamp())."
+        },
+        "deletedByUid": {
+          "type": "string",
+          "description": "UID del usuario (ADMIN o DIAMANTE_ALMA) que envió el ingreso a la papelera."
+        },
+        "deletedByName": {
+          "type": "string",
+          "description": "Nombre visible de quien envió el ingreso a la papelera."
+        }
+      },
+      "required": [
+        "unitId",
+        "entryDate",
+        "fullName",
+        "documentNumber",
+        "plate",
+        "destinationUnit",
+        "visitorType",
+        "expectedTime",
+        "source",
+        "notes",
+        "status",
+        "createdByUid",
+        "createdByName",
+        "createdAt",
+        "updatedAt",
+        "deletedAt",
+        "deletedByUid",
+        "deletedByName"
       ]
     },
     "FcmToken": {
@@ -225,7 +305,11 @@
     },
     "/entries/{entryId}": {
       "schema": { "$ref": "#/entities/AccessEntry" },
-      "description": "Registros de ingresos diarios de personal y visitantes."
+      "description": "Registros activos de ingresos diarios de personal y visitantes."
+    },
+    "/trashedEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/TrashedEntry" },
+      "description": "Papelera de ingresos borrados lógicamente (acceso exclusivo de Administrador)."
     }
   }
 }

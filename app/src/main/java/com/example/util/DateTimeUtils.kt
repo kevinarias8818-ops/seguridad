@@ -23,6 +23,9 @@ object DateTimeUtils {
 
     fun todayIso(): String = isoDateFormat.format(Date())
 
+    fun currentTimeHm(nowMillis: Long = System.currentTimeMillis()): String =
+        timeFormat.format(Date(nowMillis))
+
     fun isoDateDaysAgo(daysAgo: Int, nowMillis: Long = System.currentTimeMillis()): String {
         val cal = Calendar.getInstance().apply {
             timeInMillis = nowMillis

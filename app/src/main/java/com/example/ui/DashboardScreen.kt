@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.HourglassTop
@@ -86,13 +87,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material3.FilterChipDefaults
 import com.example.auth.GoogleAuthHelper
 import com.example.model.AccessEntry
 import com.example.model.EntryStatus
+import com.example.model.TrashedEntry
 import com.example.model.UiState
 import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.example.notifications.NotificationHelper
+import com.example.ui.theme.Emerald100
+import com.example.ui.theme.Emerald600
+import com.example.ui.theme.Emerald900
 import com.example.util.DateTimeUtils
 import com.example.util.PlateImageAttachment
 import com.example.util.TimeSlotFilter
@@ -101,6 +109,7 @@ import kotlinx.coroutines.launch
 
 private enum class AppTab(val label: String) {
     ENTRIES("Ingresos"),
+    TRASH("Papelera"),
     USERS("Usuarios")
 }
 
@@ -116,6 +125,8 @@ fun MainDashboardRoute(
 
     val profileState by viewModel.profileState.collectAsStateWithLifecycle()
     val entriesState by viewModel.entriesState.collectAsStateWithLifecycle()
+    val activeOnSiteEntries by viewModel.activeOnSiteEntriesState.collectAsStateWithLifecycle()
+    val trashedState by viewModel.trashedEntriesState.collectAsStateWithLifecycle()
     val usersState by viewModel.allUsersState.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val simulateOperator by viewModel.simulateOperatorMode.collectAsStateWithLifecycle()
@@ -137,17 +148,25 @@ fun MainDashboardRoute(
     var showEmailImportDialog by remember { mutableStateOf(false) }
     var showExcelExportDialog by remember { mutableStateOf(false) }
     var entryToDelete by remember { mutableStateOf<AccessEntry?>(null) }
+    var trashedToPurge by remember { mutableStateOf<TrashedEntry?>(null) }
 
     val profile = (profileState as? UiState.Success)?.data
-    val isRealAdmin = profile?.parsedRole == UserRole.ADMIN && profile.active
-    val isActiveStaff = profile != null &&
-        profile.active &&
-        (profile.parsedRole == UserRole.ADMIN || profile.parsedRole == UserRole.OPERATOR)
+    val loadedRole = profile?.parsedRole ?: UserRole.PENDING
+    val isRealAdmin = loadedRole == UserRole.ADMIN && profile?.active == true
     val isEffectiveAdmin = isRealAdmin && !simulateOperator
+    val isActiveDiamanteAlma = profile != null && profile.active && loadedRole == UserRole.DIAMANTE_ALMA
+    val isActiveStaff = profile != null && profile.active && loadedRole.isActiveStaffRole
+    val canCreateEntries = isEffectiveAdmin || isActiveDiamanteAlma
+    val canSendToTrash = isEffectiveAdmin || isActiveDiamanteAlma
+    val canUseFullHistory = isEffectiveAdmin || isActiveDiamanteAlma
+    val receivesPushAlerts = profile != null &&
+        profile.active &&
+        (loadedRole == UserRole.ADMIN || loadedRole == UserRole.OPERATOR)
     val isPendingApproval = profile != null &&
-        (profile.parsedRole == UserRole.PENDING || !profile.active)
+        (loadedRole == UserRole.PENDING || !profile.active)
     val pendingUsersCount = (usersState as? UiState.Success)?.data
         ?.count { it.parsedRole == UserRole.PENDING } ?: 0
+    val trashedCount = (trashedState as? UiState.Success)?.data?.size ?: 0
 
     var hasNotificationPermission by remember {
         mutableStateOf(NotificationHelper.hasNotificationPermission(context))
@@ -174,8 +193,8 @@ fun MainDashboardRoute(
         }
     }
 
-    LaunchedEffect(isActiveStaff) {
-        if (!isActiveStaff) return@LaunchedEffect
+    LaunchedEffect(receivesPushAlerts) {
+        if (!receivesPushAlerts) return@LaunchedEffect
         viewModel.entryAlerts.collect { alert ->
             val tag = if (alert.status.isNotBlank()) "${alert.entryId}_${alert.status}" else alert.entryId
             NotificationHelper.showEntryAlert(
@@ -194,12 +213,16 @@ fun MainDashboardRoute(
     }
 
     LaunchedEffect(isEffectiveAdmin) {
-        if (!isEffectiveAdmin && currentTab == AppTab.USERS) {
+        if (!isEffectiveAdmin && (currentTab == AppTab.USERS || currentTab == AppTab.TRASH)) {
             currentTab = AppTab.ENTRIES
         }
         if (!isEffectiveAdmin && showExcelExportDialog) {
             showExcelExportDialog = false
             viewModel.resetExcelExportState()
+        }
+        if (!isEffectiveAdmin) {
+            trashedToPurge = null
+            editingEntry = null
         }
     }
 
@@ -226,6 +249,7 @@ fun MainDashboardRoute(
                                     isPendingApproval -> "Pendiente de aprobación"
                                     isEffectiveAdmin -> "Administrador"
                                     isRealAdmin -> "Vista Operador"
+                                    isActiveDiamanteAlma -> "Diamante Alma"
                                     else -> "Operador"
                                 }
                                 val statusSuffix = if (!syncStatus.isOnline) " · Sin internet (Modo Offline)" else ""
@@ -299,12 +323,21 @@ fun MainDashboardRoute(
                             modifier = Modifier.testTag("nav_entries_tab")
                         )
                         NavigationBarItem(
+                            selected = currentTab == AppTab.TRASH,
+                            onClick = { currentTab = AppTab.TRASH },
+                            icon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null) },
+                            label = {
+                                Text(if (trashedCount > 0) "Papelera ($trashedCount)" else "Papelera")
+                            },
+                            modifier = Modifier.testTag("nav_trash_tab")
+                        )
+                        NavigationBarItem(
                             selected = currentTab == AppTab.USERS,
                             onClick = { currentTab = AppTab.USERS },
                             icon = { Icon(Icons.Filled.Group, contentDescription = null) },
                             label = {
                                 Text(
-                                    if (pendingUsersCount > 0) "Usuarios ($pendingUsersCount)" else "Usuarios y Roles"
+                                    if (pendingUsersCount > 0) "Usuarios ($pendingUsersCount)" else "Usuarios"
                                 )
                             },
                             modifier = Modifier.testTag("nav_users_tab")
@@ -313,7 +346,7 @@ fun MainDashboardRoute(
                 }
             },
             floatingActionButton = {
-                if (isEffectiveAdmin && !isPendingApproval && currentTab == AppTab.ENTRIES) {
+                if (canCreateEntries && !isPendingApproval && currentTab == AppTab.ENTRIES) {
                     ExtendedFloatingActionButton(
                         onClick = { showCreateDialog = true },
                         icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -337,6 +370,14 @@ fun MainDashboardRoute(
                             onClick = { currentTab = AppTab.ENTRIES },
                             icon = { Icon(Icons.AutoMirrored.Filled.ListAlt, contentDescription = null) },
                             label = { Text("Ingresos") }
+                        )
+                        NavigationRailItem(
+                            selected = currentTab == AppTab.TRASH,
+                            onClick = { currentTab = AppTab.TRASH },
+                            icon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null) },
+                            label = {
+                                Text(if (trashedCount > 0) "Papelera ($trashedCount)" else "Papelera")
+                            }
                         )
                         NavigationRailItem(
                             selected = currentTab == AppTab.USERS,
@@ -400,6 +441,14 @@ fun MainDashboardRoute(
                                 onSignOut = { GoogleAuthHelper.signOut(credentialManager, scope) },
                                 modifier = Modifier.weight(1f)
                             )
+                        } else if (currentTab == AppTab.TRASH && isEffectiveAdmin) {
+                            TrashEntriesScreen(
+                                trashedState = trashedState,
+                                busyEntryId = busyEntryId,
+                                onRestore = viewModel::restoreEntryFromTrash,
+                                onPermanentDeleteRequest = { trashedToPurge = it },
+                                modifier = Modifier.weight(1f)
+                            )
                         } else if (currentTab == AppTab.USERS && isEffectiveAdmin) {
                             UsersManagementScreen(
                                 currentUserId = profState.data.userId,
@@ -413,8 +462,11 @@ fun MainDashboardRoute(
                             EntriesDashboardContent(
                                 profile = profState.data,
                                 isEffectiveAdmin = isEffectiveAdmin,
+                                canCreateEntries = canCreateEntries,
+                                canSendToTrash = canSendToTrash,
+                                canUseFullHistory = canUseFullHistory,
                                 isSimulatingOperator = isRealAdmin && simulateOperator,
-                                showEnableNotificationsBanner = isActiveStaff && !hasNotificationPermission,
+                                showEnableNotificationsBanner = receivesPushAlerts && !hasNotificationPermission,
                                 onRequestNotifications = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                         notificationPermissionLauncher.launch(
@@ -454,9 +506,10 @@ fun MainDashboardRoute(
         }
     }
 
-    if (showCreateDialog) {
+    if (showCreateDialog && canCreateEntries) {
         EntryEditorDialog(
             existingEntry = null,
+            activeOnSiteEntries = activeOnSiteEntries,
             isSaving = isSubmitting,
             onDismiss = { if (!isSubmitting) showCreateDialog = false },
             onSaveNew = { draft ->
@@ -467,9 +520,10 @@ fun MainDashboardRoute(
         )
     }
 
-    editingEntry?.let { entry ->
+    editingEntry?.takeIf { isEffectiveAdmin }?.let { entry ->
         EntryEditorDialog(
             existingEntry = entry,
+            activeOnSiteEntries = activeOnSiteEntries,
             isSaving = isSubmitting,
             onDismiss = { if (!isSubmitting) editingEntry = null },
             onSaveNew = {},
@@ -480,7 +534,7 @@ fun MainDashboardRoute(
         )
     }
 
-    if (showEmailImportDialog) {
+    if (showEmailImportDialog && canCreateEntries) {
         EmailImportDialog(
             isSaving = isSubmitting,
             onDismiss = { if (!isSubmitting) showEmailImportDialog = false },
@@ -500,21 +554,50 @@ fun MainDashboardRoute(
         )
     }
 
-    entryToDelete?.let { entry ->
+    entryToDelete?.takeIf { canSendToTrash }?.let { entry ->
         AlertDialog(
             onDismissRequest = { entryToDelete = null },
-            title = { Text("Eliminar registro") },
-            text = { Text("¿Seguro que deseas eliminar el ingreso de ${entry.fullName}?") },
+            title = { Text("Enviar a la papelera") },
+            text = {
+                Text(
+                    "El ingreso de ${entry.fullName} se moverá a la papelera y dejará de contarse en los ingresos activos. Solo el Administrador podrá restaurarlo o eliminarlo definitivamente."
+                )
+            },
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.deleteEntry(entry)
+                        viewModel.moveEntryToTrash(entry)
                         entryToDelete = null
-                    }
-                ) { Text("Eliminar") }
+                    },
+                    modifier = Modifier.testTag("confirm_send_to_trash_button")
+                ) { Text("Enviar a papelera") }
             },
             dismissButton = {
                 TextButton(onClick = { entryToDelete = null }) { Text("Cancelar") }
+            }
+        )
+    }
+
+    trashedToPurge?.takeIf { isEffectiveAdmin }?.let { item ->
+        AlertDialog(
+            onDismissRequest = { trashedToPurge = null },
+            title = { Text("Eliminar definitivamente") },
+            text = {
+                Text(
+                    "¿Seguro que deseas eliminar de forma permanente el registro de ${item.fullName}? Esta acción no se puede deshacer."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.permanentlyDeleteFromTrash(item)
+                        trashedToPurge = null
+                    },
+                    modifier = Modifier.testTag("confirm_purge_trash_button")
+                ) { Text("Eliminar definitivo") }
+            },
+            dismissButton = {
+                TextButton(onClick = { trashedToPurge = null }) { Text("Cancelar") }
             }
         )
     }
@@ -524,6 +607,9 @@ fun MainDashboardRoute(
 private fun EntriesDashboardContent(
     profile: UserProfile,
     isEffectiveAdmin: Boolean,
+    canCreateEntries: Boolean,
+    canSendToTrash: Boolean,
+    canUseFullHistory: Boolean,
     isSimulatingOperator: Boolean,
     showEnableNotificationsBanner: Boolean,
     onRequestNotifications: () -> Unit,
@@ -744,12 +830,17 @@ private fun EntriesDashboardContent(
                 }
             }
 
-            // Metrics Summary Header
+            // Metrics Summary Header (clickable quick filters aligned with horizontal chips)
             item(span = { GridItemSpan(maxLineSpan) }) {
-                val totalLabel = if (isEffectiveAdmin && filterState.dateScope == DateScopeFilter.FULL_HISTORY) {
+                val totalLabel = if (canUseFullHistory && filterState.dateScope == DateScopeFilter.FULL_HISTORY) {
                     "Total"
                 } else {
                     "Hoy"
+                }
+                val toggleStatus: (EntryStatusFilter) -> Unit = { target ->
+                    onStatusFilterChange(
+                        if (filterState.statusFilter == target) EntryStatusFilter.ALL else target
+                    )
                 }
                 if (isWideMetrics) {
                     Row(
@@ -761,28 +852,44 @@ private fun EntriesDashboardContent(
                             value = pendingCount.toString(),
                             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                             contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.weight(1f)
+                            selected = filterState.statusFilter == EntryStatusFilter.PENDING,
+                            onClick = { toggleStatus(EntryStatusFilter.PENDING) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("kpi_pending_card")
                         )
                         SummaryMetricCard(
                             title = "En sitio",
                             value = checkedInCount.toString(),
                             containerColor = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.weight(1f)
+                            selected = filterState.statusFilter == EntryStatusFilter.CHECKED_IN,
+                            onClick = { toggleStatus(EntryStatusFilter.CHECKED_IN) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("kpi_onsite_card")
                         )
                         SummaryMetricCard(
                             title = "Salieron",
                             value = checkedOutCount.toString(),
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.weight(1f)
+                            selected = filterState.statusFilter == EntryStatusFilter.CHECKED_OUT,
+                            onClick = { toggleStatus(EntryStatusFilter.CHECKED_OUT) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("kpi_exited_card")
                         )
                         SummaryMetricCard(
                             title = totalLabel,
                             value = allEntries.size.toString(),
                             containerColor = MaterialTheme.colorScheme.surfaceVariant,
                             contentColor = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f)
+                            selected = filterState.statusFilter == EntryStatusFilter.ALL,
+                            onClick = { onStatusFilterChange(EntryStatusFilter.ALL) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("kpi_total_card")
                         )
                     }
                 } else {
@@ -799,14 +906,22 @@ private fun EntriesDashboardContent(
                                 value = pendingCount.toString(),
                                 containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                                 contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.weight(1f)
+                                selected = filterState.statusFilter == EntryStatusFilter.PENDING,
+                                onClick = { toggleStatus(EntryStatusFilter.PENDING) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("kpi_pending_card")
                             )
                             SummaryMetricCard(
                                 title = "En sitio",
                                 value = checkedInCount.toString(),
                                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.weight(1f)
+                                selected = filterState.statusFilter == EntryStatusFilter.CHECKED_IN,
+                                onClick = { toggleStatus(EntryStatusFilter.CHECKED_IN) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("kpi_onsite_card")
                             )
                         }
                         Row(
@@ -818,80 +933,92 @@ private fun EntriesDashboardContent(
                                 value = checkedOutCount.toString(),
                                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.weight(1f)
+                                selected = filterState.statusFilter == EntryStatusFilter.CHECKED_OUT,
+                                onClick = { toggleStatus(EntryStatusFilter.CHECKED_OUT) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("kpi_exited_card")
                             )
                             SummaryMetricCard(
                                 title = totalLabel,
                                 value = allEntries.size.toString(),
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                                 contentColor = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f)
+                                selected = filterState.statusFilter == EntryStatusFilter.ALL,
+                                onClick = { onStatusFilterChange(EntryStatusFilter.ALL) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("kpi_total_card")
                             )
                         }
                     }
                 }
             }
 
-            // Admin quick action bar
-            if (isEffectiveAdmin) {
+            // Quick action bar (Create for Admin & Diamante Alma; Excel strictly for Admin)
+            if (canCreateEntries || isEffectiveAdmin) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onOpenEmailImport,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("open_email_import_button"),
-                                shape = RoundedCornerShape(12.dp)
+                        if (canCreateEntries) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Email,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Importar correo")
-                            }
-                            Button(
-                                onClick = onOpenCreateEntry,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("open_manual_create_button"),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Carga manual")
+                                OutlinedButton(
+                                    onClick = onOpenEmailImport,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("open_email_import_button"),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Email,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Importar correo")
+                                }
+                                Button(
+                                    onClick = onOpenCreateEntry,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("open_manual_create_button"),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Add,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Carga manual")
+                                }
                             }
                         }
 
-                        OutlinedButton(
-                            onClick = onOpenExcelExport,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("open_excel_export_button"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.TableView,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Descargar Excel (24h / 7 días)")
+                        if (isEffectiveAdmin) {
+                            OutlinedButton(
+                                onClick = onOpenExcelExport,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("open_excel_export_button"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.TableView,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Descargar Excel (24h / 7 días)")
+                            }
                         }
                     }
                 }
@@ -929,14 +1056,52 @@ private fun EntriesDashboardContent(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         EntryStatusFilter.entries.forEach { stFilter ->
+                            val isOnSiteChip = stFilter == EntryStatusFilter.CHECKED_IN
+                            val isSelected = filterState.statusFilter == stFilter
                             FilterChip(
-                                selected = filterState.statusFilter == stFilter,
+                                selected = isSelected,
                                 onClick = { onStatusFilterChange(stFilter) },
-                                label = { Text(stFilter.label) },
+                                leadingIcon = if (isOnSiteChip) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Filled.CheckCircle,
+                                            contentDescription = null,
+                                            tint = if (isSelected) Emerald900 else Emerald600,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                label = {
+                                    Text(
+                                        if (isOnSiteChip) "${stFilter.label} ($checkedInCount)" else stFilter.label
+                                    )
+                                },
+                                colors = if (isOnSiteChip) {
+                                    FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Emerald100,
+                                        selectedLabelColor = Emerald900
+                                    )
+                                } else {
+                                    FilterChipDefaults.filterChipColors()
+                                },
+                                border = if (isOnSiteChip && !isSelected) {
+                                    FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = false,
+                                        borderColor = Emerald600.copy(alpha = 0.65f)
+                                    )
+                                } else {
+                                    FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = isSelected
+                                    )
+                                },
                                 modifier = Modifier.testTag("filter_status_${stFilter.name}")
                             )
                         }
-                        if (isEffectiveAdmin) {
+                        if (canUseFullHistory) {
                             DateScopeFilter.entries.forEach { scope ->
                                 FilterChip(
                                     selected = filterState.dateScope == scope,
@@ -1022,7 +1187,7 @@ private fun EntriesDashboardContent(
                                         style = MaterialTheme.typography.titleMedium
                                     )
                                     Text(
-                                        text = if (isEffectiveAdmin && allEntries.isEmpty()) {
+                                        text = if (canCreateEntries && allEntries.isEmpty()) {
                                             "Usa 'Importar correo' para pegar avisos del correo institucional o 'Carga manual' para crear un registro."
                                         } else {
                                             "Ajusta el buscador o cambia el filtro de estado / horario."
@@ -1037,7 +1202,8 @@ private fun EntriesDashboardContent(
                         items(filteredEntries, key = { it.id }) { entry ->
                             EntryCard(
                                 entry = entry,
-                                isAdminActionsEnabled = isEffectiveAdmin,
+                                canEdit = isEffectiveAdmin,
+                                canSendToTrash = canSendToTrash,
                                 isBusy = busyEntryId == entry.id,
                                 isPendingSync = entry.id in syncStatus.pendingSyncIds,
                                 onCheckInNow = { attachment -> onCheckInNow(entry, attachment) },
@@ -1065,11 +1231,15 @@ private fun SummaryMetricCard(
     value: String,
     containerColor: androidx.compose.ui.graphics.Color,
     contentColor: androidx.compose.ui.graphics.Color,
+    selected: Boolean = false,
+    onClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
+        onClick = onClick,
         color = containerColor,
         shape = RoundedCornerShape(14.dp),
+        border = if (selected) BorderStroke(2.dp, contentColor.copy(alpha = 0.75f)) else null,
         modifier = modifier
     ) {
         Column(
@@ -1140,7 +1310,7 @@ private fun PendingAccessScreen(
                 )
 
                 Text(
-                    text = "Tu cuenta (${profile.email}) fue registrada correctamente, pero no puede visualizar ingresos hasta que el Administrador te asigne el rol de Operador.",
+                    text = "Tu cuenta (${profile.email}) fue registrada correctamente, pero no puede visualizar ingresos hasta que el Administrador te asigne un rol autorizado (Operador o Diamante Alma).",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
