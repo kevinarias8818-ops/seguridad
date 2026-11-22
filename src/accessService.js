@@ -805,6 +805,16 @@ export async function updateUserRoleAndStatus(targetUserId, role, active) {
   );
 }
 
+export async function deleteUserProfile(targetUserId, currentUserId) {
+  if (!targetUserId) {
+    throw new Error('ID de usuario inválido.');
+  }
+  if (currentUserId && targetUserId === currentUserId) {
+    throw new Error('No puedes eliminar tu propio usuario administrador.');
+  }
+  return awaitWriteWithOfflineGrace(deleteDoc(doc(db, 'users', targetUserId)));
+}
+
 export function humanizeFirebaseError(error) {
   const code = error?.code || '';
   const msg = error?.message || '';

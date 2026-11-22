@@ -1,7 +1,7 @@
 <resources>
-    <string name="app_name">Control Acceso</string>
+    <string name="app_name">Control GUSEF</string>
     <string name="sign_in_google">Iniciar sesión con Google</string>
-    <string name="auth_title">Control Acceso</string>
+    <string name="auth_title">Control GUSEF</string>
     <string name="auth_subtitle">Consola de turnos para control de ingresos diarios de personal y visitantes en unidad.</string>
     <string name="default_notification_channel_id" translatable="false">ingresos_cenop</string>
 </resources>

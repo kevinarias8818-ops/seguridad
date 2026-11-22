@@ -145,7 +145,9 @@ class ControlAccesoViewModel(
                     repository.observeUserProfile(currentUserId)
                         .map<UserProfile?, UiState<UserProfile>> { profile ->
                             if (profile == null) {
-                                UiState.Loading
+                                UiState.Error(
+                                    "Tu usuario fue eliminado de la lista por el Administrador. Pulsa \"Reintentar\" para volver a ingresar con tu mismo correo."
+                                )
                             } else if (profile.parsedRole != UserRole.PENDING && !profile.active) {
                                 UiState.Error("Tu cuenta está suspendida por el Administrador.")
                             } else {
@@ -724,6 +726,38 @@ class ControlAccesoViewModel(
         }
     }
 
+    fun deleteUserProfile(targetUser: UserProfile) {
+        val profile = (profileState.value as? UiState.Success)?.data
+        val canManage = canDeleteUser(
+            actingProfile = profile,
+            targetUser = targetUser,
+            actingUserId = currentUserId,
+            simulateOperatorMode = _simulateOperatorMode.value
+        )
+        if (!canManage) {
+            val msg = if (targetUser.userId == currentUserId) {
+                "No puedes eliminar tu propio usuario administrador en sesión."
+            } else {
+                "Solo el Administrador puede eliminar usuarios."
+            }
+            _snackbarEvents.tryEmit(msg)
+            return
+        }
+        viewModelScope.launch {
+            val result = repository.deleteUserProfile(targetUser.userId)
+            result.onSuccess { outcome ->
+                val msg = if (outcome.queuedOffline) {
+                    "Eliminación de ${targetUser.displayName} en cola offline. Podrá volver a ingresar con su correo."
+                } else {
+                    "Usuario ${targetUser.displayName} eliminado. Podrá volver a ingresar con su mismo correo."
+                }
+                _snackbarEvents.tryEmit(msg)
+            }.onFailure { error ->
+                _snackbarEvents.tryEmit(error.localizedMessage ?: "No se pudo eliminar el usuario")
+            }
+        }
+    }
+
     fun syncStaffPushToken(context: Context, unitId: String, role: UserRole) {
         viewModelScope.launch {
             FcmTokenManager.registerStaffPushToken(
@@ -843,5 +877,17 @@ class ControlAccesoViewModel(
             UserRole.OPERATOR -> isNewEntry || becameCheckedIn
             UserRole.DIAMANTE_ALMA, UserRole.PENDING -> false
         }
+
+        fun canDeleteUser(
+            actingProfile: UserProfile?,
+            targetUser: UserProfile,
+            actingUserId: String,
+            simulateOperatorMode: Boolean
+        ): Boolean = actingProfile != null &&
+            actingProfile.active &&
+            actingProfile.parsedRole.canManageUsers &&
+            !simulateOperatorMode &&
+            targetUser.userId.isNotBlank() &&
+            targetUser.userId != actingUserId
     }
 }

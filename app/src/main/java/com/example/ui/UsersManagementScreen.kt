@@ -23,10 +23,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,7 +40,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -56,8 +64,11 @@ fun UsersManagementScreen(
     currentUserId: String,
     usersState: UiState<List<UserProfile>>,
     onUpdateUserRole: (UserProfile, UserRole, Boolean) -> Unit,
+    onDeleteUser: (UserProfile) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var userToDelete by remember { mutableStateOf<UserProfile?>(null) }
+
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter
@@ -357,6 +368,32 @@ fun UsersManagementScreen(
                                         }
                                     }
                                 }
+
+                                if (!isSelf) {
+                                    OutlinedButton(
+                                        onClick = { userToDelete = user },
+                                        border = BorderStroke(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+                                        ),
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.error
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("delete_user_${user.userId}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.DeleteOutline,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Eliminar usuario (permite reingreso)")
+                                    }
+                                }
                             }
                         }
                     }
@@ -365,5 +402,37 @@ fun UsersManagementScreen(
 
             item { Spacer(modifier = Modifier.height(24.dp)) }
         }
+    }
+
+    userToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { userToDelete = null },
+            title = { Text("Eliminar usuario") },
+            text = {
+                Text(
+                    "¿Eliminar a ${target.displayName} (${target.email}) de la lista de usuarios?\n\nEsto no bloquea su cuenta de Google: si vuelve a iniciar sesión con el mismo correo podrá ingresar nuevamente para solicitar acceso."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteUser(target)
+                        userToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_user_button")
+                ) {
+                    Text("Eliminar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { userToDelete = null }) {
+                    Text("Cancelar")
+                }
+            }
+        )
     }
 }

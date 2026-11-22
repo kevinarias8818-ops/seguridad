@@ -221,10 +221,10 @@ fun AuthScreen(
                             ) {
                                 Image(
                                     painter = painterResource(id = R.drawable.img_launcher_cenop),
-                                    contentDescription = "Escudo CENOP Policía Nacional",
+                                    contentDescription = "Escudo GUSEF del CENOP",
                                     modifier = Modifier
-                                        .padding(7.dp)
-                                        .size(38.dp),
+                                        .padding(5.dp)
+                                        .size(42.dp),
                                     contentScale = ContentScale.Fit
                                 )
                             }

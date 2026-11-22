@@ -40,6 +40,7 @@ import {
   compressPlateImageFile,
   createEntry,
   currentTimeHm,
+  deleteUserProfile,
   ensureUserProfile,
   fetchAllEntriesForUnit,
   findActiveOnSiteDuplicates,
@@ -70,6 +71,8 @@ import {
   updateEntry,
   updateUserRoleAndStatus,
 } from './accessService.js';
+
+const GUSEF_LOGO_SRC = './assets/aistudio/file_00000000b39881f5a56b20e2dfa9f789_53c9de7d.png';
 import {
   REPORT_PERIODS,
   buildAccessExcelBlob,
@@ -231,10 +234,8 @@ export default function App() {
     const unsub = subscribeUserProfile(
       authUser.uid,
       (nextProfile) => {
-        if (nextProfile) {
-          setProfile(nextProfile);
-          setProfileLoading(false);
-        }
+        setProfile(nextProfile || null);
+        setProfileLoading(false);
       },
       (err) => {
         setErrorMsg(humanizeFirebaseError(err));
@@ -529,6 +530,38 @@ export default function App() {
     }
   }
 
+  async function handleDeleteUser(targetUser) {
+    if (!effectiveIsAdmin) {
+      setErrorMsg('Solo el Administrador puede eliminar usuarios.');
+      return;
+    }
+    if (!targetUser?.userId || targetUser.userId === profile?.userId) {
+      setErrorMsg('No puedes eliminar tu propio usuario administrador.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `¿Eliminar a ${targetUser.displayName} (${targetUser.email}) de la lista de usuarios?\n\nEsto NO bloquea su cuenta de Google: podrá volver a ingresar con el mismo correo cuando lo requiera.`
+      )
+    ) {
+      return;
+    }
+    setBusyId(targetUser.userId);
+    setErrorMsg('');
+    try {
+      const res = await deleteUserProfile(targetUser.userId, profile?.userId);
+      showToast(
+        res?.queuedOffline
+          ? `Eliminación de ${targetUser.displayName} en cola offline.`
+          : `Usuario ${targetUser.displayName} eliminado. Puede volver a ingresar con el mismo correo.`
+      );
+    } catch (err) {
+      setErrorMsg(humanizeFirebaseError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
   const filteredEntries = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     return entries.filter((entry) => {
@@ -580,10 +613,10 @@ export default function App() {
     return (
       <div className="center-screen">
         <div className="auth-card" style={{ textAlign: 'center' }}>
-          <div className="brand-crest" style={{ margin: '0 auto 14px', width: 56, height: 56 }}>
-            <img src="./cenop-escudo.png" alt="Escudo CENOP" />
+          <div className="brand-crest" style={{ margin: '0 auto 14px', width: 64, height: 64 }}>
+            <img src={GUSEF_LOGO_SRC} alt="Escudo GUSEF del CENOP" />
           </div>
-          <h1 className="auth-title">Control Acceso</h1>
+          <h1 className="auth-title">Control GUSEF</h1>
           <p className="auth-desc">Conectando con Firebase en tiempo real...</p>
         </div>
       </div>
@@ -609,11 +642,11 @@ export default function App() {
             </div>
             <div className="auth-hero-overlay">
               <div className="brand-crest">
-                <img src="./cenop-escudo.png" alt="Escudo CENOP" />
+                <img src={GUSEF_LOGO_SRC} alt="Escudo GUSEF del CENOP" />
               </div>
               <div>
                 <h1 className="auth-title" style={{ margin: 0, color: '#fff' }}>
-                  Control Acceso
+                  Control GUSEF
                 </h1>
                 <p style={{ margin: '2px 0 0', fontSize: '0.82rem', color: '#cbd5e1' }}>
                   Seguridad e Ingresos de Unidad
@@ -690,23 +723,27 @@ export default function App() {
     );
   }
 
-  // Pending / Inactive user view (No access to /entries)
+  // Pending / Inactive / Removed user view (No access to /entries)
   if (!isStaffActive) {
-    const isPending = !profile || profile.role === 'PENDING';
+    const isRemoved = profile === null;
+    const isPending = isRemoved || profile.role === 'PENDING';
     return (
       <div className="center-screen">
         <div className="auth-card">
-          <div
-            className="brand-badge"
-            style={{ background: 'linear-gradient(135deg, #d97706, #b45309)' }}
-          >
-            <ShieldAlert size={24} />
+          <div className="brand-crest" style={{ margin: '0 auto 14px', width: 64, height: 64 }}>
+            <img src={GUSEF_LOGO_SRC} alt="Escudo GUSEF del CENOP" />
           </div>
           <h1 className="auth-title">
-            {isPending ? 'Cuenta pendiente de aprobación' : 'Acceso desactivado'}
+            {isRemoved
+              ? 'Perfil retirado de la lista'
+              : isPending
+              ? 'Cuenta pendiente de aprobación'
+              : 'Acceso desactivado'}
           </h1>
           <p className="auth-desc">
-            {isPending
+            {isRemoved
+              ? 'Tu usuario fue eliminado de la lista por el Administrador, pero tu correo sigue habilitado para ingresar. Pulsa "Volver a ingresar" para registrarte nuevamente.'
+              : isPending
               ? 'Tu sesión está activa, pero aún no tienes permiso para ver los ingresos de la unidad. Solicita al Administrador que te asigne un rol autorizado (Operador o Diamante Alma).'
               : 'Tu acceso como personal autorizado está actualmente suspendido. Contacta al Administrador.'}
           </p>
@@ -729,10 +766,18 @@ export default function App() {
               type="button"
               className="btn btn-outline"
               style={{ flex: 1 }}
-              onClick={() => ensureUserProfile(authUser).catch((e) => setErrorMsg(humanizeFirebaseError(e)))}
+              onClick={async () => {
+                setErrorMsg('');
+                try {
+                  const ensured = await ensureUserProfile(authUser);
+                  setProfile(ensured);
+                } catch (e) {
+                  setErrorMsg(humanizeFirebaseError(e));
+                }
+              }}
             >
               <RefreshCw size={17} />
-              Verificar estado
+              {isRemoved ? 'Volver a ingresar' : 'Verificar estado'}
             </button>
             <button
               type="button"
@@ -755,10 +800,10 @@ export default function App() {
         <div className="topbar-inner">
           <div className="brand-wrap">
             <div className="brand-crest">
-              <img src="./cenop-escudo.png" alt="Escudo CENOP" />
+              <img src={GUSEF_LOGO_SRC} alt="Escudo GUSEF del CENOP" />
             </div>
             <div>
-              <h1 className="brand-title">Control Acceso</h1>
+              <h1 className="brand-title">Control GUSEF</h1>
               <p className="brand-sub">
                 {profile.displayName} · Unidad {profile.unitId || UNIT_ID}
                 {!isOnline ? ' · Sin internet (Modo Offline)' : ''}
@@ -1329,6 +1374,7 @@ export default function App() {
             currentUid={profile.userId}
             busyId={busyId}
             onChangeRole={handleRoleChange}
+            onDeleteUser={handleDeleteUser}
           />
         ) : null}
       </main>
@@ -1767,13 +1813,14 @@ function TrashEntriesSection({ items, loading, busyId, onRestore, onPermanentDel
   );
 }
 
-function UsersManagementSection({ users, currentUid, busyId, onChangeRole }) {
+function UsersManagementSection({ users, currentUid, busyId, onChangeRole, onDeleteUser }) {
   return (
     <section aria-label="Gestión de usuarios y roles">
       <div className="info-banner">
         <strong>Control estricto de permisos:</strong> Ningún usuario recibe rol al registrarse.
         Solo tú como Administrador puedes asignar Operador, Diamante Alma (registra ingresos y envía
-        a papelera) o Administrador, o suspender cuentas.
+        a papelera) o Administrador, suspender cuentas o eliminar usuarios (sin bloquear su correo
+        para que puedan volver a ingresar).
       </div>
 
       {users.length === 0 ? (
@@ -1860,6 +1907,16 @@ function UsersManagementSection({ users, currentUid, busyId, onChangeRole }) {
                       }
                     >
                       {u.active ? 'Suspender' : 'Reactivar'}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger-outline"
+                      disabled={isBusy}
+                      onClick={() => onDeleteUser(u)}
+                    >
+                      <Trash2 size={15} />
+                      Eliminar
                     </button>
                   </div>
                 )}

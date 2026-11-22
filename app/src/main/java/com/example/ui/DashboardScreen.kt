@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -81,15 +82,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.FilterChipDefaults
+import com.example.R
 import com.example.auth.GoogleAuthHelper
 import com.example.model.AccessEntry
 import com.example.model.EntryStatus
@@ -239,29 +246,42 @@ fun MainDashboardRoute(
                         containerColor = MaterialTheme.colorScheme.surface
                     ),
                     title = {
-                        Column {
-                            Text(
-                                text = "Control Acceso",
-                                style = MaterialTheme.typography.titleLarge
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.img_launcher_cenop),
+                                contentDescription = "Escudo GUSEF",
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape),
+                                contentScale = ContentScale.Fit
                             )
-                            if (profile != null) {
-                                val roleText = when {
-                                    isPendingApproval -> "Pendiente de aprobación"
-                                    isEffectiveAdmin -> "Administrador"
-                                    isRealAdmin -> "Vista Operador"
-                                    isActiveDiamanteAlma -> "Diamante Alma"
-                                    else -> "Operador"
-                                }
-                                val statusSuffix = if (!syncStatus.isOnline) " · Sin internet (Modo Offline)" else ""
+                            Column {
                                 Text(
-                                    text = "${profile.displayName} · $roleText$statusSuffix",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (!syncStatus.isOnline || isPendingApproval) {
-                                        MaterialTheme.colorScheme.tertiary
-                                    } else {
-                                        MaterialTheme.colorScheme.primary
-                                    }
+                                    text = stringResource(R.string.app_name),
+                                    style = MaterialTheme.typography.titleLarge
                                 )
+                                if (profile != null) {
+                                    val roleText = when {
+                                        isPendingApproval -> "Pendiente de aprobación"
+                                        isEffectiveAdmin -> "Administrador"
+                                        isRealAdmin -> "Vista Operador"
+                                        isActiveDiamanteAlma -> "Diamante Alma"
+                                        else -> "Operador"
+                                    }
+                                    val statusSuffix = if (!syncStatus.isOnline) " · Sin internet (Modo Offline)" else ""
+                                    Text(
+                                        text = "${profile.displayName} · $roleText$statusSuffix",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (!syncStatus.isOnline || isPendingApproval) {
+                                            MaterialTheme.colorScheme.tertiary
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        }
+                                    )
+                                }
                             }
                         }
                     },
@@ -456,6 +476,7 @@ fun MainDashboardRoute(
                                 onUpdateUserRole = { user, role, active ->
                                     viewModel.updateUserRoleAndStatus(user, role, active)
                                 },
+                                onDeleteUser = viewModel::deleteUserProfile,
                                 modifier = Modifier.weight(1f)
                             )
                         } else {
@@ -1289,19 +1310,14 @@ private fun PendingAccessScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.HourglassTop,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                        modifier = Modifier
-                            .padding(14.dp)
-                            .size(32.dp)
-                    )
-                }
+                Image(
+                    painter = painterResource(id = R.drawable.img_launcher_cenop),
+                    contentDescription = "Escudo GUSEF del CENOP",
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(CircleShape),
+                    contentScale = ContentScale.Fit
+                )
 
                 Text(
                     text = "Acceso pendiente de autorización",

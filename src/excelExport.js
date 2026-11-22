@@ -296,7 +296,7 @@ function buildSummarySheetXml(entries, period, generatedBy, unitId, imageCount, 
   });
 
   const rows = [
-    ['Control Acceso CENOP — Reporte de Ingresos y Salidas', '', 2],
+    ['Control GUSEF CENOP — Reporte de Ingresos y Salidas', '', 2],
     ['Período seleccionado', period.title, 6],
     ['Cobertura de fechas', `${startDate} al ${endDate}`, 0],
     ['Unidad', unitId, 0],
@@ -623,7 +623,7 @@ export function buildAccessExcelBlob(entries, periodKey, currentUser, nowMs = Da
 
   return {
     blob: buildZipStore(files),
-    fileName: `ControlAcceso_${period.slug}_${formatFileStamp(nowMs)}.xlsx`,
+    fileName: `ControlGUSEF_${period.slug}_${formatFileStamp(nowMs)}.xlsx`,
     entryCount: filtered.length,
     imageCount: mediaList.length,
     period,

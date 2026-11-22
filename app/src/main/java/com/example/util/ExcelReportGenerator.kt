@@ -97,7 +97,7 @@ object ExcelReportGenerator {
     ): ExcelReportResult {
         val filtered = filterEntriesForPeriod(entries, period, nowMillis)
         val dir = File(context.cacheDir, "excel_reports").apply { mkdirs() }
-        val fileName = "ControlAcceso_${period.fileSlug}_${DateTimeUtils.formatFileStamp(nowMillis)}.xlsx"
+        val fileName = "ControlGUSEF_${period.fileSlug}_${DateTimeUtils.formatFileStamp(nowMillis)}.xlsx"
         val outFile = File(dir, fileName)
 
         val (xlsxBytes, embeddedCount) = generateWorkbookBytesWithStats(
@@ -369,7 +369,7 @@ object ExcelReportGenerator {
         )
 
         val rows = listOf(
-            Triple("Control Acceso CENOP — Reporte de Ingresos y Salidas", "", 2),
+            Triple("Control GUSEF CENOP — Reporte de Ingresos y Salidas", "", 2),
             Triple("Período seleccionado", period.title, 6),
             Triple("Cobertura de fechas", "$startDate al $endDate", 0),
             Triple("Unidad", unitId, 0),

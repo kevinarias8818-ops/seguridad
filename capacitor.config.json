@@ -1,6 +1,6 @@
 {
   "appId": "com.aistudio.controlacceso.xmkrpv",
-  "appName": "Control Acceso",
+  "appName": "Control GUSEF",
   "webDir": "dist",
   "android": {
     "allowMixedContent": false

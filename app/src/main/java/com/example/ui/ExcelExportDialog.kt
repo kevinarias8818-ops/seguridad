@@ -251,7 +251,7 @@ fun ExcelExportDialog(
                                 val sendIntent = Intent(Intent.ACTION_SEND).apply {
                                     type = ExcelReportGenerator.XLSX_MIME_TYPE
                                     putExtra(Intent.EXTRA_STREAM, report.shareUri)
-                                    putExtra(Intent.EXTRA_SUBJECT, "Reporte Control Acceso (${report.period.title})")
+                                    putExtra(Intent.EXTRA_SUBJECT, "Reporte Control GUSEF (${report.period.title})")
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }
                                 runCatching {

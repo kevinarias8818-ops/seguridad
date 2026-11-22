@@ -170,7 +170,10 @@ service cloud.firestore {
                           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'active', 'updatedAt']))
                        );
 
-      allow delete: if false;
+      allow delete: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isAdmin() &&
+                       request.auth.uid != userId;
 
       match /fcmTokens/{tokenId} {
         allow get: if isSignedIn() && isValidId(tokenId) && (request.auth.uid == userId || isAdmin());

@@ -235,6 +235,24 @@ class AccessRepository(
         }
     }
 
+    suspend fun deleteUserProfile(targetUserId: String): Result<WriteOutcome> {
+        val docPath = "users/$targetUserId"
+        return try {
+            val currentUid = requireUserId()
+            require(targetUserId.isNotBlank()) { "ID de usuario vacío" }
+            require(targetUserId != currentUid) { "No puedes eliminar tu propio usuario administrador." }
+            val outcome = db.collection("users").document(targetUserId)
+                .delete()
+                .awaitWriteQueued()
+            Result.success(outcome)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docPath)
+            Result.failure(e)
+        }
+    }
+
     suspend fun saveFcmToken(
         uid: String,
         unitId: String,
