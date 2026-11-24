@@ -417,45 +417,70 @@ function validatePlateAttachment(plateImageName, plateImageData) {
 
 export function compressPlateImageFile(file) {
   return new Promise((resolve, reject) => {
-    if (!file || (file.type && !file.type.startsWith('image/'))) {
-      reject(new Error('Selecciona un archivo de imagen válido (image/*).'));
+    const fileType = (file?.type || '').toLowerCase();
+    const isLikelyImage =
+      fileType.startsWith('image/') ||
+      (!fileType && /\.(jpe?g|png|webp|heic|heif|bmp|gif)$/i.test(file?.name || ''));
+    if (!file || (fileType && !fileType.startsWith('image/')) || !isLikelyImage) {
+      reject(new Error('Selecciona un archivo de imagen válido (JPG, PNG, WEBP o foto).'));
       return;
     }
+
+    const loadImageFromSrc = (src, revokeFn) => {
+      const img = new Image();
+      img.onerror = () => {
+        revokeFn?.();
+        reject(
+          new Error(
+            'El navegador no pudo abrir esta imagen. En iPhone/iPad o PC prueba con formato JPG/PNG/WEBP.'
+          )
+        );
+      };
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, MAX_PLATE_DIM_PX / Math.max(img.width || 1, img.height || 1));
+          const targetW = Math.max(1, Math.round((img.width || 1) * scale));
+          const targetH = Math.max(1, Math.round((img.height || 1) * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('No se pudo procesar la imagen en este navegador.'));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+          let chosenUrl = '';
+          for (const q of [0.78, 0.64, 0.5, 0.36]) {
+            const candidate = canvas.toDataURL('image/jpeg', q);
+            if (candidate.length <= MAX_PLATE_DATA_URL_CHARS) {
+              chosenUrl = candidate;
+              break;
+            }
+          }
+          if (!chosenUrl) {
+            reject(new Error('La imagen sigue siendo muy pesada después de comprimir.'));
+            return;
+          }
+          const baseName = (file.name || 'placa_vehiculo.jpg').trim().slice(0, 160) || 'placa_vehiculo.jpg';
+          const safeName = baseName.replace(/\.(heic|heif)$/i, '.jpg');
+          resolve({ fileName: safeName, dataUrl: chosenUrl });
+        } finally {
+          revokeFn?.();
+        }
+      };
+      img.src = src;
+    };
+
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const objectUrl = URL.createObjectURL(file);
+      loadImageFromSrc(objectUrl, () => URL.revokeObjectURL(objectUrl));
+      return;
+    }
+
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('No se pudo leer el archivo seleccionado.'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('El archivo no es una imagen compatible.'));
-      img.onload = () => {
-        const scale = Math.min(1, MAX_PLATE_DIM_PX / Math.max(img.width || 1, img.height || 1));
-        const targetW = Math.max(1, Math.round((img.width || 1) * scale));
-        const targetH = Math.max(1, Math.round((img.height || 1) * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('No se pudo procesar la imagen en este navegador.'));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, targetW, targetH);
-        let chosenUrl = '';
-        for (const q of [0.78, 0.64, 0.5, 0.36]) {
-          const candidate = canvas.toDataURL('image/jpeg', q);
-          if (candidate.length <= MAX_PLATE_DATA_URL_CHARS) {
-            chosenUrl = candidate;
-            break;
-          }
-        }
-        if (!chosenUrl) {
-          reject(new Error('La imagen sigue siendo muy pesada después de comprimir.'));
-          return;
-        }
-        const safeName = (file.name || 'placa_vehiculo.jpg').trim().slice(0, 160) || 'placa_vehiculo.jpg';
-        resolve({ fileName: safeName, dataUrl: chosenUrl });
-      };
-      img.src = String(reader.result || '');
-    };
+    reader.onload = () => loadImageFromSrc(String(reader.result || ''), null);
     reader.readAsDataURL(file);
   });
 }

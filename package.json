@@ -1,8 +1,8 @@
 {
-  "name": "control-acceso-web",
+  "name": "control-gusef-web",
   "private": true,
   "version": "1.0.0",
-  "description": "Control Acceso — Aplicación web React lista para compilar a APK con Vite y Capacitor",
+  "description": "Control GUSEF — PWA responsiva (PC, iOS y Android) con Firebase y modo offline",
   "type": "module",
   "scripts": {
     "dev": "vite",

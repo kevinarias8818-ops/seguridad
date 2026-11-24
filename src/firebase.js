@@ -7,19 +7,17 @@ import {
   persistentMultipleTabManager,
 } from 'firebase/firestore';
 
-// Configuración directa de Firebase Web para cliente (sin variables de entorno ni lectura de servidor).
-// IMPORTANTE: Registra una app Web en Firebase Console (proyecto gen-lang-client-0597164698)
-// y reemplaza el valor de appId con el App ID Web real ("1:757035548395:web:...") antes de compilar.
+// Configuración directa de Firebase Web para cliente (proyecto gen-lang-client-0597164698).
 export const firebaseConfig = {
   apiKey: 'AIzaSyAPx94hISeiK-lmFttQM9JsV3LJ1-nlgIc',
   authDomain: 'gen-lang-client-0597164698.firebaseapp.com',
   projectId: 'gen-lang-client-0597164698',
   storageBucket: 'gen-lang-client-0597164698.firebasestorage.app',
   messagingSenderId: '757035548395',
-  appId: '1:757035548395:web:REEMPLAZAR_CON_WEB_APP_ID',
+  appId: '1:757035548395:web:51805d611bbd0ef2adc8ae',
 };
 
-// Base de datos Firestore provisionada para Control Acceso
+// Base de datos Firestore provisionada para Control GUSEF
 export const FIRESTORE_DATABASE_ID =
   'ai-studio-android-controla-85365416-02eb-48c9-9aee-0fdd518a825c';
 

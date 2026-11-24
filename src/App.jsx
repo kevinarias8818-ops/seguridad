@@ -332,7 +332,7 @@ export default function App() {
     return () => unsub();
   }, [effectiveIsAdmin, activeTab]);
 
-  async function handleGoogleSignIn() {
+  async function handleGoogleSignInRedirectFallback() {
     setAuthBusy(true);
     setErrorMsg('');
     try {
@@ -349,14 +349,22 @@ export default function App() {
     }
   }
 
-  async function handleGoogleSignInPopupFallback() {
+  async function handleGoogleSignIn() {
     setAuthBusy(true);
     setErrorMsg('');
     try {
       await signInWithPopup(auth, googleProvider);
+      setAuthBusy(false);
     } catch (err) {
+      const code = err?.code || '';
+      if (
+        code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment'
+      ) {
+        await handleGoogleSignInRedirectFallback();
+        return;
+      }
       setErrorMsg(humanizeFirebaseError(err));
-    } finally {
       setAuthBusy(false);
     }
   }
@@ -702,16 +710,16 @@ export default function App() {
               disabled={authBusy}
             >
               <LogIn size={18} />
-              {authBusy ? 'Redirigiendo a Google...' : 'Iniciar sesión con Google'}
+              {authBusy ? 'Conectando con Google...' : 'Iniciar sesión con Google'}
             </button>
             <button
               type="button"
               className="btn btn-outline btn-sm"
               style={{ width: '100%' }}
-              onClick={handleGoogleSignInPopupFallback}
+              onClick={handleGoogleSignInRedirectFallback}
               disabled={authBusy}
             >
-              Alternativa: ingresar con ventana emergente
+              Alternativa: ingresar por redirección
             </button>
           </div>
 
@@ -1585,8 +1593,44 @@ function ExcelExportModal({ profile, onClose, onExported }) {
 function PlateImageAttachTrigger({ disabled = false, title = 'Adjuntar imagen de la placa', onSelected, onError }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [isTouchDevice, setIsTouchDevice] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(
+      window.matchMedia?.('(pointer: coarse)')?.matches ||
+        (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+    );
+  });
+  const wrapRef = useRef(null);
   const cameraInputRef = useRef(null);
   const galleryInputRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia('(pointer: coarse)');
+    const sync = () =>
+      setIsTouchDevice(Boolean(mq.matches || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)));
+    sync();
+    mq.addEventListener?.('change', sync);
+    return () => mq.removeEventListener?.('change', sync);
+  }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const handlePointerDown = (event) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen]);
 
   async function handleFileChange(e) {
     const file = e.target.files?.[0];
@@ -1604,8 +1648,17 @@ function PlateImageAttachTrigger({ disabled = false, title = 'Adjuntar imagen de
     }
   }
 
+  function handleTriggerClick() {
+    if (!isTouchDevice) {
+      // En escritorio (PC/Mac), abre directamente el selector estándar de archivos sin bloquear con menú móvil
+      galleryInputRef.current?.click();
+      return;
+    }
+    setMenuOpen((prev) => !prev);
+  }
+
   return (
-    <div className="plate-attach-wrap">
+    <div ref={wrapRef} className="plate-attach-wrap">
       <input
         ref={cameraInputRef}
         type="file"
@@ -1626,28 +1679,29 @@ function PlateImageAttachTrigger({ disabled = false, title = 'Adjuntar imagen de
         className="btn btn-icon-attach"
         title={title}
         aria-label={title}
+        aria-expanded={isTouchDevice ? menuOpen : undefined}
         disabled={disabled || processing}
-        onClick={() => setMenuOpen((prev) => !prev)}
+        onClick={handleTriggerClick}
       >
         <Camera size={20} />
       </button>
-      {menuOpen && (
+      {menuOpen && isTouchDevice && (
         <div className="plate-source-menu" role="menu">
           <button
             type="button"
             className="btn btn-sm btn-primary"
-            onClick={() => cameraInputRef.current?.click()}
+            onClick={() => galleryInputRef.current?.click()}
           >
-            <Camera size={15} />
-            Cámara trasera
+            <ImageIcon size={15} />
+            Galería / Archivo
           </button>
           <button
             type="button"
             className="btn btn-sm btn-outline"
-            onClick={() => galleryInputRef.current?.click()}
+            onClick={() => cameraInputRef.current?.click()}
           >
-            <ImageIcon size={15} />
-            Archivo (image/*)
+            <Camera size={15} />
+            Tomar foto ahora
           </button>
         </div>
       )}
